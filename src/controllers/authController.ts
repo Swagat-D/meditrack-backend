@@ -132,7 +132,7 @@ export const signupUser = async (req: Request, res: Response) => {
 // Verify OTP
 export const verifyOTP = async (req: Request, res: Response) => {
   try {
-    const { email, otp } = req.body as OTPVerification;
+    const { email, otp, type } = req.body; 
 
     // Find user with OTP
     const user = await User.findOne({ email }).select('+otp +otpExpires');
@@ -168,21 +168,27 @@ export const verifyOTP = async (req: Request, res: Response) => {
       });
     }
 
-    // Verify user and clear OTP
-    user.isEmailVerified = true;
-    user.otp = undefined;
-    user.otpExpires = undefined;
-    await user.save();
+    // Handle different OTP verification types
+    if (type === 'forgot_password') {
+      res.status(200).json({
+        success: true,
+        message: 'OTP verified successfully. You can now reset your password.'
+      });
+    } else {
+      user.isEmailVerified = true;
+      user.otp = undefined;
+      user.otpExpires = undefined;
+      await user.save();
 
-    // Generate token
-    const token = user.generateAuthToken();
+      const token = user.generateAuthToken();
 
-    res.status(200).json({
-      success: true,
-      message: 'Email verified successfully',
-      user: user.toJSON(),
-      token
-    });
+      res.status(200).json({
+        success: true,
+        message: 'Email verified successfully',
+        user: user.toJSON(),
+        token
+      });
+    }
 
   } catch (error) {
     console.error('OTP verification error:', error);
