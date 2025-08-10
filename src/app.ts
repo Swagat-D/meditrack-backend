@@ -6,6 +6,7 @@ import authRoutes from './routes/authRoutes';
 import { globalErrorHandler } from './middleware/errorHandler';
 import caregiverRoutes from './routes/caregiverRoutes';
 import barcodeRoutes from './routes/barcodeRoutes';
+import patientRoutes from './routes/patientRoutes'
 
 const app = express();
 
@@ -51,6 +52,7 @@ app.get('/health', (req, res) => {
 // API routes
 app.use('/api/auth', authRoutes);
 app.use('/api/caregiver', caregiverRoutes);
+app.use('/api/patient', patientRoutes);
 app.use('/api/barcode', barcodeRoutes);
 
 // 404 handler
