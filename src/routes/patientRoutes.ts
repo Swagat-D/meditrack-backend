@@ -15,11 +15,18 @@ import {
   requestCaregiverConnection,
   getNotificationSettings,
   updateNotificationSettings,
-  exportHealthData
+  exportHealthData,
+  getCurrentUser,
+  updateProfile,
+  addEmergencyContact,
+  removeEmergencyContact,
+  getRecentActivities
 } from '../controllers/patientController';
 import { authenticateToken, authorizeRoles } from '../middleware/auth';
 import { handleValidationErrors } from '../middleware/errorHandler';
 import rateLimit from 'express-rate-limit';
+import '../models/EmergencyContact';
+import '../models/MealTime';
 
 const router = express.Router();
 
@@ -69,5 +76,11 @@ router.post('/caregiver-request', requestCaregiverConnection);
 
 // Data export
 router.post('/export-data', exportHealthData);
+
+router.get('/profile', getCurrentUser);
+router.put('/profile', updateProfile);
+router.post('/emergency-contacts', addEmergencyContact);
+router.delete('/emergency-contacts/:contactId', removeEmergencyContact);
+router.get('/activities', getRecentActivities);
 
 export default router;
