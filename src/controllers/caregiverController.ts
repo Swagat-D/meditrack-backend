@@ -6,6 +6,7 @@ import User from '../models/User';
 import mongoose from 'mongoose';
 import { generateOTP, generateOTPExpiry, isOTPExpired } from '../utils/otpUtils';
 import { emailService } from '../services/emailService';
+import { generateMedicationBarcodeData, generateShortBarcodeData } from '../utils/barcodeUtils';
 
 interface AuthRequest extends Request {
   user?: any;
@@ -335,21 +336,36 @@ export const addMedication = async (req: AuthRequest, res: Response) => {
     }
 
     // Create medication with proper field mapping
-    const medication = new Medication({
-      name: medicationData.name,
-      dosage: medicationData.dosage,
-      dosageUnit: medicationData.dosageUnit,
-      frequency: medicationData.frequency,
-      timingRelation: medicationData.timingRelation,
-      totalQuantity: medicationData.quantity, // Map quantity to totalQuantity
-      remainingQuantity: medicationData.quantity, // Initially same as total
-      expiryDate: medicationData.expiryDate,
-      instructions: medicationData.instructions,
-      patient: patientId,
-      caregiver: caregiverId
+const medication = new Medication({
+  name: medicationData.name,
+  dosage: medicationData.dosage,
+  dosageUnit: medicationData.dosageUnit,
+  frequency: medicationData.frequency,
+  timingRelation: medicationData.timingRelation,
+  totalQuantity: medicationData.quantity, // Map quantity to totalQuantity
+  remainingQuantity: medicationData.quantity, // Initially same as total
+  expiryDate: medicationData.expiryDate,
+  instructions: medicationData.instructions,
+  patient: patientId,
+  caregiver: caregiverId
+});
+
+// Save first to get the medication ID
+await medication.save();
+
+// Generate proper barcode data after saving (so we have the medication ID)
+const barcodeData = generateShortBarcodeData(medication._id.toString());
+
+// Update the medication with barcode data
+medication.barcodeData = barcodeData;
+await medication.save();
+
+ console.log('Created medication with barcode:', {
+      medicationId: medication._id,
+      barcodeData: barcodeData
     });
 
-    await medication.save();
+
 
     // Create activity log
     await Activity.create({
