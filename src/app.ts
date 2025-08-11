@@ -7,6 +7,7 @@ import { globalErrorHandler } from './middleware/errorHandler';
 import caregiverRoutes from './routes/caregiverRoutes';
 import barcodeRoutes from './routes/barcodeRoutes';
 import patientRoutes from './routes/patientRoutes'
+import './models/MedicationLog';
 
 const app = express();
 

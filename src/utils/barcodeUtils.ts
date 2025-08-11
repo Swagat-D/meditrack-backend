@@ -59,6 +59,7 @@ export const canTakeMedicationNow = (lastTaken: Date | null, frequency: number):
   hoursRemaining?: number 
 } => {
   if (!lastTaken) {
+    console.log('No previous dose found - can take now');
     return { canTake: true };
   }
 
@@ -67,12 +68,19 @@ export const canTakeMedicationNow = (lastTaken: Date | null, frequency: number):
   const now = new Date();
   const timeSinceLastDose = (now.getTime() - lastTaken.getTime()) / (1000 * 60 * 60);
 
+  console.log(`Time since last dose: ${timeSinceLastDose.toFixed(2)} hours`);
+  console.log(`Required interval: ${intervalHours} hours`);
+
   if (timeSinceLastDose >= intervalHours) {
+    console.log('Enough time has passed - can take now');
     return { canTake: true };
   }
 
   const nextDoseTime = new Date(lastTaken.getTime() + (intervalHours * 60 * 60 * 1000));
   const hoursRemaining = Math.ceil(intervalHours - timeSinceLastDose);
+
+  console.log(`Next dose time: ${nextDoseTime}`);
+  console.log(`Hours remaining: ${hoursRemaining}`);
 
   return { 
     canTake: false, 

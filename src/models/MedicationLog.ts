@@ -4,14 +4,12 @@ export interface IMedicationLog extends mongoose.Document {
   _id: string;
   medication: mongoose.Types.ObjectId;
   patient: mongoose.Types.ObjectId;
+  caregiver: mongoose.Types.ObjectId;
   takenAt: Date;
-  scheduledTime: Date;
-  status: 'taken' | 'missed' | 'late';
+  dosage: string;
+  dosageUnit: string;
   notes?: string;
-  location?: {
-    latitude: number;
-    longitude: number;
-  };
+  method: 'manual' | 'barcode_scan' | 'reminder';
   createdAt: Date;
   updatedAt: Date;
 }
@@ -27,26 +25,31 @@ const medicationLogSchema = new Schema<IMedicationLog>({
     ref: 'Patient',
     required: true
   },
+  caregiver: {
+    type: Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
   takenAt: {
     type: Date,
     required: true
   },
-  scheduledTime: {
-    type: Date,
+  dosage: {
+    type: String,
     required: true
   },
-  status: {
+  dosageUnit: {
     type: String,
-    enum: ['taken', 'missed', 'late'],
-    default: 'taken'
+    required: true
   },
   notes: {
     type: String,
     maxlength: 500
   },
-  location: {
-    latitude: Number,
-    longitude: Number
+  method: {
+    type: String,
+    enum: ['manual', 'barcode_scan', 'reminder'],
+    default: 'manual'
   }
 }, {
   timestamps: true,
@@ -61,7 +64,8 @@ const medicationLogSchema = new Schema<IMedicationLog>({
 });
 
 // Indexes
+medicationLogSchema.index({ medication: 1, takenAt: -1 });
 medicationLogSchema.index({ patient: 1, takenAt: -1 });
-medicationLogSchema.index({ medication: 1 });
+medicationLogSchema.index({ caregiver: 1, takenAt: -1 });
 
 export default mongoose.model<IMedicationLog>('MedicationLog', medicationLogSchema);

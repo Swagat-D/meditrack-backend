@@ -2,7 +2,9 @@ import { Request, Response } from 'express';
 import Medication from '../models/Medication';
 import MedicationLog from '../models/MedicationLog';
 import Patient from '../models/Patient';
+import Activity from '../models/Activity'
 import { parseMedicationBarcodeData, canTakeMedicationNow } from '../utils/barcodeUtils';
+import mongoose from 'mongoose';
 
 interface AuthRequest extends Request {
   user?: any;
@@ -15,24 +17,12 @@ export const scanBarcode = async (req: AuthRequest, res: Response) => {
 
     console.log('=== BACKEND BARCODE SCAN DEBUG ===');
     console.log('Received barcode:', barcodeData);
-    console.log('User email:', userEmail);
 
-    // Parse the barcode data
     const parsedData = parseMedicationBarcodeData(barcodeData);
-    console.log('Parsed data:', parsedData);
     
-    // Since we're using short format, find medication by barcodeData directly
     const medication = await Medication.findOne({ barcodeData: parsedData.barcodeData })
       .populate('patient', 'name email')
       .populate('caregiver', 'name email');
-
-      console.log('Found medication:', medication ? 'YES' : 'NO');
-
-      if (!medication) {
-      // Let's also search for any medication with similar barcode
-      const allMedications = await Medication.find({}).select('name barcodeData patient');
-      console.log('All barcodes in database:', allMedications.map(m => m.barcodeData));
-    }
 
     if (!medication) {
       return res.status(404).json({
@@ -41,7 +31,6 @@ export const scanBarcode = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Verify user has access to this medication
     const patient = medication.patient as any;
     if (patient.email !== userEmail) {
       return res.status(403).json({
@@ -50,13 +39,23 @@ export const scanBarcode = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Check if medication can be taken now
-    const doseCheck = canTakeMedicationNow(medication.lastTaken || null, medication.frequency);
-    
-    // Calculate days left
-    const daysLeft = Math.floor(medication.remainingQuantity / medication.frequency);
+    // Fetch the most recent dose log from Activity table (real data)
+    const lastDoseActivity = await Activity.findOne({
+      patient: patient._id,
+      medication: medication._id,
+      type: 'dose_taken'
+    }).sort({ createdAt: -1 });
 
-    // Check if medication is expired
+    // Use actual last taken time from logs, not the medication.lastTaken field
+    const actualLastTaken = lastDoseActivity ? lastDoseActivity.createdAt : null;
+    
+    console.log('Last dose activity found:', lastDoseActivity ? 'YES' : 'NO');
+    console.log('Actual last taken from logs:', actualLastTaken);
+
+    // Check timing based on real data
+    const doseCheck = canTakeMedicationNow(actualLastTaken, medication.frequency);
+    
+    const daysLeft = Math.floor(medication.remainingQuantity / medication.frequency);
     const isExpired = new Date(medication.expiryDate) <= new Date();
 
     const result = {
@@ -68,7 +67,7 @@ export const scanBarcode = async (req: AuthRequest, res: Response) => {
         frequency: medication.frequency,
         timingRelation: medication.timingRelation,
         instructions: medication.instructions || 'Take as directed',
-        lastTaken: medication.lastTaken,
+        lastTaken: actualLastTaken, // Real last taken time
         daysLeft: Math.max(0, daysLeft),
         remainingQuantity: medication.remainingQuantity,
         status: medication.status,
@@ -86,13 +85,14 @@ export const scanBarcode = async (req: AuthRequest, res: Response) => {
         email: (medication.caregiver as any).email
       },
       dosingSafety: {
-        canTake: doseCheck.canTake && !isExpired && medication.status === 'active',
+        canTake: doseCheck.canTake && !isExpired && medication.status === 'active' && medication.remainingQuantity > 0,
         reason: !doseCheck.canTake ? 'Too soon for next dose' : 
                 isExpired ? 'Medication expired' : 
-                medication.status !== 'active' ? 'Medication not active' : 'Safe to take',
+                medication.status !== 'active' ? 'Medication not active' : 
+                medication.remainingQuantity <= 0 ? 'No medication remaining' : 'Safe to take',
         nextDoseTime: doseCheck.nextDoseTime,
         hoursRemaining: doseCheck.hoursRemaining,
-        lastTaken: medication.lastTaken,
+        lastTaken: actualLastTaken,
         timingRelation: medication.timingRelation,
         recommendedTiming: getTimingRecommendation(medication.timingRelation)
       }
@@ -112,9 +112,85 @@ export const scanBarcode = async (req: AuthRequest, res: Response) => {
   }
 };
 
-// Rest of the controller remains the same...
-export const recordMedicationTaken = async (req: AuthRequest, res: Response) => {
-  // ... (same as before)
+export const recordMedicationViaBarcode = async (req: AuthRequest, res: Response) => {
+  try {
+    const { medicationId } = req.params;
+    const { notes, takenAt } = req.body;
+    const userEmail = req.user.email;
+
+    console.log('=== RECORD VIA BARCODE DEBUG ===');
+    console.log('Medication ID:', medicationId);
+    console.log('User email:', userEmail);
+
+    // Find medication and patient
+    const medication = await Medication.findById(medicationId)
+      .populate('patient', 'name email');
+
+    if (!medication) {
+      return res.status(404).json({
+        success: false,
+        message: 'Medication not found'
+      });
+    }
+
+    const patient = medication.patient as any;
+    if (patient.email !== userEmail) {
+      return res.status(403).json({
+        success: false,
+        message: 'You do not have access to this medication'
+      });
+    }
+
+    // Same logic as patientController logMedicationTaken
+    const takenTime = takenAt ? new Date(takenAt) : new Date();
+    
+    // Update medication
+    medication.lastTaken = takenTime;
+    medication.remainingQuantity = Math.max(0, medication.remainingQuantity - 1);
+    
+    if (medication.remainingQuantity === 0) {
+      medication.status = 'completed';
+    }
+
+    await medication.save();
+
+    // Create activity log (same as home screen)
+    await Activity.create({
+      type: 'dose_taken',
+      patient: patient._id,
+      caregiver: medication.caregiver,
+      medication: medication._id,
+      message: `${patient.name} took ${medication.name}`,
+      priority: 'low',
+      metadata: {
+        doseTaken: takenTime
+      }
+    });
+
+    const remainingDays = medication.remainingQuantity > 0 
+      ? Math.floor(medication.remainingQuantity / medication.frequency)
+      : 0;
+
+    res.status(200).json({
+      success: true,
+      message: 'Medication dose logged successfully',
+      data: {
+        medicationId: medication._id,
+        medicationName: medication.name,
+        dosage: `${medication.dosage}${medication.dosageUnit}`,
+        takenAt: takenTime,
+        remainingQuantity: medication.remainingQuantity,
+        remainingDays
+      }
+    });
+
+  } catch (error) {
+    console.error('Record via barcode error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to record medication dose. Please try again.'
+    });
+  }
 };
 
 const getTimingRecommendation = (timingRelation: string): string => {
