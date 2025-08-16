@@ -15,7 +15,7 @@ export interface IEmergencyContact extends mongoose.Document {
 const emergencyContactSchema = new Schema<IEmergencyContact>({
   patient: {
     type: Schema.Types.ObjectId,
-    ref: 'Patient',
+    ref: 'User',
     required: true
   },
   name: {

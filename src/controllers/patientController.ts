@@ -12,22 +12,11 @@ interface AuthRequest extends Request {
 }
 
 // Get dashboard data
-// Replace the existing getDashboardData function with this enhanced version
 export const getDashboardData = async (req: AuthRequest, res: Response) => {
   try {
-    const patientEmail = req.user.email;
+    const patientUserId = req.user._id;
 
-    // Find patient record
-    const patient = await Patient.findOne({ email: patientEmail });
-    if (!patient) {
-      return res.status(404).json({
-        success: false,
-        message: 'Patient profile not found'
-      });
-    }
-
-    // Get medications for this patient
-    const medications = await Medication.find({ patient: patient._id });
+    const medications = await Medication.find({ patient: patientUserId });
 
     // Calculate stats
     const totalMedications = medications.length;
@@ -36,8 +25,7 @@ export const getDashboardData = async (req: AuthRequest, res: Response) => {
       ? Math.round(medications.reduce((sum, med) => sum + med.adherenceRate, 0) / medications.length)
       : 0;
 
-    // Calculate missed doses (simplified logic)
-    const missedDoses = Math.floor(Math.random() * 3); // Replace with actual logic
+    const missedDoses = Math.floor(Math.random() * 3);
 
     // Get today's medications
     const todaysMedications = medications
@@ -93,18 +81,10 @@ export const getDashboardData = async (req: AuthRequest, res: Response) => {
 // Get medications
 export const getMedications = async (req: AuthRequest, res: Response) => {
   try {
-    const patientEmail = req.user.email;
+    const patientUserId = req.user._id; 
     const { search, status } = req.query;
 
-    const patient = await Patient.findOne({ email: patientEmail });
-    if (!patient) {
-      return res.status(404).json({
-        success: false,
-        message: 'Patient profile not found'
-      });
-    }
-
-    let query: any = { patient: patient._id };
+    let query: any = { patient: patientUserId };
     
     if (search) {
       query.name = { $regex: search, $options: 'i' };
@@ -149,19 +129,11 @@ export const getMedications = async (req: AuthRequest, res: Response) => {
 export const getMedicationDetails = async (req: AuthRequest, res: Response) => {
   try {
     const { medicationId } = req.params;
-    const patientEmail = req.user.email;
-
-    const patient = await Patient.findOne({ email: patientEmail });
-    if (!patient) {
-      return res.status(404).json({
-        success: false,
-        message: 'Patient profile not found'
-      });
-    }
+    const patientUserId = req.user._id;
 
     const medication = await Medication.findOne({
       _id: medicationId,
-      patient: patient._id
+      patient: patientUserId
     });
 
     if (!medication) {
@@ -202,19 +174,11 @@ export const logMedicationTaken = async (req: AuthRequest, res: Response) => {
   try {
     const { medicationId } = req.params;
     const { takenAt, notes } = req.body;
-    const patientEmail = req.user.email;
-
-    const patient = await Patient.findOne({ email: patientEmail });
-    if (!patient) {
-      return res.status(404).json({
-        success: false,
-        message: 'Patient profile not found'
-      });
-    }
+    const patientUserId = req.user._id;
 
     const medication = await Medication.findOne({
       _id: medicationId,
-      patient: patient._id
+      patient: patientUserId
     });
 
     if (!medication) {
@@ -224,7 +188,6 @@ export const logMedicationTaken = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Update medication
     medication.lastTaken = new Date(takenAt);
     medication.remainingQuantity = Math.max(0, medication.remainingQuantity - 1);
     await medication.save();
@@ -232,10 +195,10 @@ export const logMedicationTaken = async (req: AuthRequest, res: Response) => {
     // Create activity log
     await Activity.create({
       type: 'dose_taken',
-      patient: patient._id,
+      patient: patientUserId,
       caregiver: medication.caregiver,
       medication: medication._id,
-      message: `${patient.name} took ${medication.name}`,
+      message: `${req.user.name} took ${medication.name}`,
       priority: 'low',
       metadata: {
         doseTaken: new Date(takenAt)
@@ -259,26 +222,16 @@ export const logMedicationTaken = async (req: AuthRequest, res: Response) => {
 // Get meal times
 export const getMealTimes = async (req: AuthRequest, res: Response) => {
   try {
-    const patientEmail = req.user.email;
+    const patientUserId = req.user._id;
 
-    const patient = await Patient.findOne({ email: patientEmail });
-    if (!patient) {
-      return res.status(404).json({
-        success: false,
-        message: 'Patient profile not found'
-      });
-    }
+    let mealTimes = await MealTime.find({ patient: patientUserId }).sort({ mealId: 1 });
 
-    // Get meal times from database
-    let mealTimes = await MealTime.find({ patient: patient._id }).sort({ mealId: 1 });
-
-    // If no meal times exist, create default ones
     if (mealTimes.length === 0) {
       const defaultMeals = getDefaultMealTimes();
       const createdMeals = await Promise.all(
         defaultMeals.map(meal => 
           MealTime.create({
-            patient: patient._id,
+            patient: patientUserId,
             ...meal
           })
         )
@@ -311,16 +264,8 @@ export const getMealTimes = async (req: AuthRequest, res: Response) => {
 // Update meal times
 export const updateMealTimes = async (req: AuthRequest, res: Response) => {
   try {
-    const patientEmail = req.user.email;
+    const patientUserId = req.user._id;
     const mealTimesData = req.body;
-
-    const patient = await Patient.findOne({ email: patientEmail });
-    if (!patient) {
-      return res.status(404).json({
-        success: false,
-        message: 'Patient profile not found'
-      });
-    }
 
     // Validate required meals
     const requiredMeals = ['breakfast', 'lunch', 'dinner'];
@@ -339,12 +284,12 @@ export const updateMealTimes = async (req: AuthRequest, res: Response) => {
       const isOptional = mealId === 'snack';
 
       return await MealTime.findOneAndUpdate(
-        { patient: patient._id, mealId },
+        { patient: patientUserId, mealId },
         {
-          patient: patient._id,
+          patient: patientUserId,
           mealId,
           name: mealName,
-          time: data.time, // Already in 24-hour format from frontend
+          time: data.time,
           enabled: data.enabled,
           isOptional
         },
@@ -375,19 +320,11 @@ export const updateMealTimes = async (req: AuthRequest, res: Response) => {
 // Get notifications
 export const getNotifications = async (req: AuthRequest, res: Response) => {
   try {
-    const patientEmail = req.user.email;
+    const patientUserId = req.user._id;
     const { type, read } = req.query;
 
-    const patient = await Patient.findOne({ email: patientEmail });
-    if (!patient) {
-      return res.status(404).json({
-        success: false,
-        message: 'Patient profile not found'
-      });
-    }
-
     // Get recent activities as notifications
-    let query: any = { patient: patient._id };
+    let query: any = { patient: patientUserId };
     
     const activities = await Activity.find(query)
       .populate('medication', 'name')
@@ -464,18 +401,10 @@ export const markNotificationAsRead = async (req: AuthRequest, res: Response) =>
 // Mark all notifications as read
 export const markAllNotificationsAsRead = async (req: AuthRequest, res: Response) => {
   try {
-    const patientEmail = req.user.email;
-
-    const patient = await Patient.findOne({ email: patientEmail });
-    if (!patient) {
-      return res.status(404).json({
-        success: false,
-        message: 'Patient profile not found'
-      });
-    }
+    const patientUserId = req.user._id;
 
     await Activity.updateMany(
-      { patient: patient._id },
+      { patient: patientUserId },
       { isRead: true }
     );
 
@@ -497,20 +426,20 @@ export const markAllNotificationsAsRead = async (req: AuthRequest, res: Response
 export const sendSOSAlert = async (req: AuthRequest, res: Response) => {
   try {
     const { message, location, severity } = req.body;
-    const patientEmail = req.user.email;
+    const patientUserId = req.user._id;
 
-    const patient = await Patient.findOne({ email: patientEmail });
+    const patient = await Patient.findOne({ email: req.user.email }).populate('caregiver');
     if (!patient) {
       return res.status(404).json({
         success: false,
-        message: 'Patient profile not found'
+        message: 'No caregiver found for this patient'
       });
     }
 
     // Create SOS activity
     const sosActivity = await Activity.create({
       type: 'sos_alert',
-      patient: patient._id,
+      patient: patientUserId,
       caregiver: patient.caregiver,
       message,
       priority: 'critical',
@@ -587,18 +516,10 @@ export const getCaregivers = async (req: AuthRequest, res: Response) => {
 // Update getEmergencyContacts
 export const getEmergencyContacts = async (req: AuthRequest, res: Response) => {
   try {
-    const patientEmail = req.user.email;
-
-    const patient = await Patient.findOne({ email: patientEmail });
-    if (!patient) {
-      return res.status(404).json({
-        success: false,
-        message: 'Patient profile not found'
-      });
-    }
+    const patientUserId = req.user._id;
 
     // Get emergency contacts from database
-    const emergencyContacts = await EmergencyContact.find({ patient: patient._id })
+    const emergencyContacts = await EmergencyContact.find({ patient: patientUserId })
       .sort({ isPrimary: -1, createdAt: -1 });
 
     const contacts = emergencyContacts.map(contact => ({
@@ -636,7 +557,7 @@ export const getEmergencyContacts = async (req: AuthRequest, res: Response) => {
 export const addEmergencyContact = async (req: AuthRequest, res: Response) => {
   try {
     const { name, relationship, phoneNumber, isPrimary } = req.body;
-    const patientEmail = req.user.email;
+    const patientUserId = req.user._id;
 
     if (!name || !relationship || !phoneNumber) {
       return res.status(400).json({
@@ -645,25 +566,16 @@ export const addEmergencyContact = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    const patient = await Patient.findOne({ email: patientEmail });
-    if (!patient) {
-      return res.status(404).json({
-        success: false,
-        message: 'Patient profile not found'
-      });
-    }
-
-    // If this contact is set as primary, update all other contacts to not be primary
     if (isPrimary) {
       await EmergencyContact.updateMany(
-        { patient: patient._id },
+        { patient: patientUserId },
         { isPrimary: false }
       );
     }
 
     // Create new emergency contact
     const newContact = await EmergencyContact.create({
-      patient: patient._id,
+      patient: patientUserId,
       name,
       relationship,
       phoneNumber,
@@ -695,7 +607,7 @@ export const addEmergencyContact = async (req: AuthRequest, res: Response) => {
 export const removeEmergencyContact = async (req: AuthRequest, res: Response) => {
   try {
     const { contactId } = req.params;
-    const patientEmail = req.user.email;
+    const patientUserId = req.user._id;
 
     // Don't allow removal of emergency services
     if (contactId === '911') {
@@ -705,18 +617,10 @@ export const removeEmergencyContact = async (req: AuthRequest, res: Response) =>
       });
     }
 
-    const patient = await Patient.findOne({ email: patientEmail });
-    if (!patient) {
-      return res.status(404).json({
-        success: false,
-        message: 'Patient profile not found'
-      });
-    }
-
     // Find and remove the contact
     const contact = await EmergencyContact.findOneAndDelete({
       _id: contactId,
-      patient: patient._id
+      patient: patientUserId
     });
 
     if (!contact) {
@@ -902,18 +806,11 @@ export const updateProfile = async (req: AuthRequest, res: Response) => {
 // Add this new function to patientController.ts
 export const getRecentActivities = async (req: AuthRequest, res: Response) => {
   try {
-    const patientEmail = req.user.email;
+    const patientUserId = req.user._id;
 
-    const patient = await Patient.findOne({ email: patientEmail });
-    if (!patient) {
-      return res.status(404).json({
-        success: false,
-        message: 'Patient profile not found'
-      });
-    }
 
     // Get recent activities for this patient
-    const activities = await Activity.find({ patient: patient._id })
+    const activities = await Activity.find({ patient: patientUserId})
       .populate('medication', 'name')
       .sort({ createdAt: -1 })
       .limit(20);

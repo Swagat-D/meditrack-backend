@@ -77,7 +77,7 @@ const medicationSchema = new Schema<IMedication>({
   },
   patient: {
     type: Schema.Types.ObjectId,
-    ref: 'Patient',
+    ref: 'User',
     required: [true, 'Patient is required']
   },
   caregiver: {

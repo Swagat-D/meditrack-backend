@@ -16,7 +16,7 @@ export interface IMealTime extends mongoose.Document {
 const mealTimeSchema = new Schema<IMealTime>({
  patient: {
    type: Schema.Types.ObjectId,
-   ref: 'Patient',
+   ref: 'User',
    required: true
  },
  mealId: {

@@ -15,14 +15,12 @@ export const scanBarcode = async (req: AuthRequest, res: Response) => {
     const { barcodeData } = req.params;
     const userEmail = req.user.email;
 
-    console.log('=== BACKEND BARCODE SCAN DEBUG ===');
-    console.log('Received barcode:', barcodeData);
 
     const parsedData = parseMedicationBarcodeData(barcodeData);
     
     const medication = await Medication.findOne({ barcodeData: parsedData.barcodeData })
-      .populate('patient', 'name email')
-      .populate('caregiver', 'name email');
+      .populate('patient', 'name email') 
+      .populate('caregiver', 'name email'); 
 
     if (!medication) {
       return res.status(404).json({
@@ -31,28 +29,23 @@ export const scanBarcode = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    const patient = medication.patient as any;
-    if (patient.email !== userEmail) {
+    const patientUser = medication.patient as any;
+    if (patientUser.email !== userEmail) {
       return res.status(403).json({
         success: false,
         message: 'You do not have access to this medication.'
       });
     }
 
-    // Fetch the most recent dose log from Activity table (real data)
     const lastDoseActivity = await Activity.findOne({
-      patient: patient._id,
+      patient: patientUser._id, 
       medication: medication._id,
       type: 'dose_taken'
     }).sort({ createdAt: -1 });
 
-    // Use actual last taken time from logs, not the medication.lastTaken field
     const actualLastTaken = lastDoseActivity ? lastDoseActivity.createdAt : null;
     
-    console.log('Last dose activity found:', lastDoseActivity ? 'YES' : 'NO');
-    console.log('Actual last taken from logs:', actualLastTaken);
 
-    // Check timing based on real data
     const doseCheck = canTakeMedicationNow(actualLastTaken, medication.frequency);
     
     const daysLeft = Math.floor(medication.remainingQuantity / medication.frequency);
@@ -67,7 +60,7 @@ export const scanBarcode = async (req: AuthRequest, res: Response) => {
         frequency: medication.frequency,
         timingRelation: medication.timingRelation,
         instructions: medication.instructions || 'Take as directed',
-        lastTaken: actualLastTaken, // Real last taken time
+        lastTaken: actualLastTaken,
         daysLeft: Math.max(0, daysLeft),
         remainingQuantity: medication.remainingQuantity,
         status: medication.status,
@@ -75,9 +68,9 @@ export const scanBarcode = async (req: AuthRequest, res: Response) => {
         expiryDate: medication.expiryDate
       },
       patient: {
-        id: patient._id,
-        name: patient.name,
-        email: patient.email
+        id: patientUser._id, // This is now User._id
+        name: patientUser.name,
+        email: patientUser.email
       },
       caregiver: {
         id: (medication.caregiver as any)._id,
@@ -122,9 +115,8 @@ export const recordMedicationViaBarcode = async (req: AuthRequest, res: Response
     console.log('Medication ID:', medicationId);
     console.log('User email:', userEmail);
 
-    // Find medication and patient
     const medication = await Medication.findById(medicationId)
-      .populate('patient', 'name email');
+      .populate('patient', 'name email'); // This now points to User model
 
     if (!medication) {
       return res.status(404).json({
@@ -133,18 +125,16 @@ export const recordMedicationViaBarcode = async (req: AuthRequest, res: Response
       });
     }
 
-    const patient = medication.patient as any;
-    if (patient.email !== userEmail) {
+    const patientUser = medication.patient as any;
+    if (patientUser.email !== userEmail) {
       return res.status(403).json({
         success: false,
         message: 'You do not have access to this medication'
       });
     }
 
-    // Same logic as patientController logMedicationTaken
     const takenTime = takenAt ? new Date(takenAt) : new Date();
     
-    // Update medication
     medication.lastTaken = takenTime;
     medication.remainingQuantity = Math.max(0, medication.remainingQuantity - 1);
     
@@ -154,13 +144,12 @@ export const recordMedicationViaBarcode = async (req: AuthRequest, res: Response
 
     await medication.save();
 
-    // Create activity log (same as home screen)
     await Activity.create({
       type: 'dose_taken',
-      patient: patient._id,
+      patient: patientUser._id, // This is now User._id
       caregiver: medication.caregiver,
       medication: medication._id,
-      message: `${patient.name} took ${medication.name}`,
+      message: `${patientUser.name} took ${medication.name}`,
       priority: 'low',
       metadata: {
         doseTaken: takenTime

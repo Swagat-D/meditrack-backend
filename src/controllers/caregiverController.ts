@@ -335,28 +335,36 @@ export const addMedication = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Create medication with proper field mapping
+    const patientUser = await Patient.findOne({
+      email: patient.email,
+      caregiver: caregiverId
+    });
+
+    if (!patientUser) {
+      return res.status(403).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
 const medication = new Medication({
   name: medicationData.name,
   dosage: medicationData.dosage,
   dosageUnit: medicationData.dosageUnit,
   frequency: medicationData.frequency,
   timingRelation: medicationData.timingRelation,
-  totalQuantity: medicationData.quantity, // Map quantity to totalQuantity
-  remainingQuantity: medicationData.quantity, // Initially same as total
+  totalQuantity: medicationData.quantity, 
+  remainingQuantity: medicationData.quantity, 
   expiryDate: medicationData.expiryDate,
   instructions: medicationData.instructions,
-  patient: patientId,
+  patient: patientUser._id,
   caregiver: caregiverId
 });
 
-// Save first to get the medication ID
 await medication.save();
 
-// Generate proper barcode data after saving (so we have the medication ID)
 const barcodeData = generateShortBarcodeData(medication._id.toString());
 
-// Update the medication with barcode data
 medication.barcodeData = barcodeData;
 await medication.save();
 
@@ -370,7 +378,7 @@ await medication.save();
     // Create activity log
     await Activity.create({
       type: 'medication_added',
-      patient: patientId,
+      patient: patientUser._id,
       caregiver: caregiverId,
       medication: medication._id,
       message: `New medication ${medication.name} added for ${patient.name}`,
@@ -455,22 +463,71 @@ export const getBarcodes = async (req: AuthRequest, res: Response) => {
 
     const medications = await Medication.find({
       caregiver: caregiverId
-    })
-    .populate('patient', 'name')
-    .sort({ createdAt: -1 });
+    }).sort({ createdAt: -1 });
 
-    const barcodes = medications.map(med => ({
-      id: med._id,
-      patientId: med.patient._id,
-      patientName: (med.patient as any).name,
-      medicationName: med.name,
-      dosage: `${med.dosage} ${med.dosageUnit}`,
-      frequency: `${med.frequency}x daily`,
-      timingRelation: med.timingRelation.replace('_', ' '),
-      barcodeData: med.barcodeData,
-      createdAt: med.createdAt,
-      downloadCount: 0 // This would come from a separate tracking system
-    }));
+    console.log(`Found ${medications.length} medications for caregiver ${caregiverId}`);
+
+    const barcodes = [];
+
+    for (const med of medications) {
+      let patientUser = null;
+      let patientName = 'Unknown Patient';
+
+      try {
+        await med.populate('patient', 'name email');
+        
+        if (med.patient && (med.patient as any).name) {
+          patientUser = med.patient as any;
+          patientName = patientUser.name;
+          console.log(`✅ Found User directly for medication ${med._id}: ${patientName}`);
+        } else {
+          console.log(`⚠️ Patient User not found directly for medication ${med._id}, trying Patient relationship...`);
+          
+          const patientRelationships = await Patient.find({ caregiver: caregiverId });
+          
+          for (const relationship of patientRelationships) {
+            const userWithEmail = await User.findOne({ 
+              email: relationship.email, 
+              role: 'patient' 
+            });
+            
+            if (userWithEmail) {
+              console.log(`🔄 Updating medication ${med._id} to point to User ${userWithEmail._id}`);
+              await Medication.findByIdAndUpdate(med._id, { 
+                patient: userWithEmail._id 
+              });
+              
+              patientUser = userWithEmail;
+              patientName = userWithEmail.name;
+              break;
+            }
+          }
+        }
+
+        if (patientUser) {
+          barcodes.push({
+            id: med._id,
+            patientId: patientUser._id,
+            patientName: patientName,
+            medicationName: med.name,
+            dosage: `${med.dosage} ${med.dosageUnit}`,
+            frequency: `${med.frequency}x daily`,
+            timingRelation: med.timingRelation.replace('_', ' '),
+            barcodeData: med.barcodeData,
+            createdAt: med.createdAt,
+            downloadCount: 0
+          });
+          console.log(`✅ Added barcode for ${patientName}: ${med.name}`);
+        } else {
+          console.warn(`❌ Could not find patient for medication ${med._id}: ${med.name}`);
+        }
+
+      } catch (error) {
+        console.error(`Error processing medication ${med._id}:`, error);
+      }
+    }
+
+    console.log(`Returning ${barcodes.length} barcodes`);
 
     res.status(200).json({
       success: true,
@@ -499,7 +556,6 @@ export const searchExistingPatients = async (req: AuthRequest, res: Response) =>
       });
     }
 
-    // Find users with patient role that match email or phone and are not already under this caregiver
     const existingPatientEmails = await Patient.distinct('email', { caregiver: caregiverId });
 
     const patients = await User.find({
@@ -689,14 +745,14 @@ export const removePatient = async (req: AuthRequest, res: Response) => {
     }
 
     // Also remove all medications and activities for this patient-caregiver relationship
-    await Promise.all([
-      Medication.deleteMany({ patient: patientId, caregiver: caregiverId }),
-      Activity.deleteMany({ patient: patientId, caregiver: caregiverId })
-    ]);
+    await Activity.deleteMany({ 
+      patient: patient._id,
+      caregiver: caregiverId 
+    });
 
     res.status(200).json({
       success: true,
-      message: 'Patient removed successfully'
+      message: 'Patient removed successfully from your care list.'
     });
 
   } catch (error) {
