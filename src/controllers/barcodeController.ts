@@ -1,11 +1,8 @@
 import { Request, Response } from 'express';
 import Medication from '../models/Medication';
-import MedicationLog from '../models/MedicationLog';
-import Patient from '../models/Patient';
 import MealTime from '../models/MealTime';
 import Activity from '../models/Activity'
 import { parseMedicationBarcodeData, canTakeMedicationNow } from '../utils/barcodeUtils';
-import mongoose from 'mongoose';
 import { validateMedicationTiming } from '../utils/medicationTimingUtils';
 
 interface AuthRequest extends Request {
@@ -195,10 +192,6 @@ export const recordMedicationViaBarcode = async (req: AuthRequest, res: Response
     const { medicationId } = req.params;
     const { notes, takenAt } = req.body;
     const userEmail = req.user.email;
-
-    console.log('=== RECORD VIA BARCODE DEBUG ===');
-    console.log('Medication ID:', medicationId);
-    console.log('User email:', userEmail);
 
     const medication = await Medication.findById(medicationId)
       .populate('patient', 'name email'); // This now points to User model

@@ -84,5 +84,6 @@ router.post('/emergency-contacts', addEmergencyContact);
 router.delete('/emergency-contacts/:contactId', removeEmergencyContact);
 router.get('/activities', getRecentActivities);
 router.get('/medications/:medicationId/timing-check', checkMedicationTiming);
+router.post('/medications/:medicationId/log', logMedicationTaken);
 
 export default router;

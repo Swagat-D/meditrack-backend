@@ -3,10 +3,10 @@ import Patient from '../models/Patient';
 import Medication from '../models/Medication';
 import Activity from '../models/Activity';
 import User from '../models/User';
-import mongoose from 'mongoose';
 import EmergencyContact from '../models/EmergencyContact';
 import MealTime from '../models/MealTime';
 import { checkMedicationTimingWindow } from './barcodeController';
+import { canTakeMedicationNow } from '../utils/barcodeUtils';
 
 interface AuthRequest extends Request {
   user?: any;
@@ -166,56 +166,6 @@ export const getMedicationDetails = async (req: AuthRequest, res: Response) => {
     res.status(500).json({
       success: false,
       message: 'Failed to get medication details'
-    });
-  }
-};
-
-// Log medication taken
-export const logMedicationTaken = async (req: AuthRequest, res: Response) => {
-  try {
-    const { medicationId } = req.params;
-    const { takenAt, notes } = req.body;
-    const patientUserId = req.user._id;
-
-    const medication = await Medication.findOne({
-      _id: medicationId,
-      patient: patientUserId
-    });
-
-    if (!medication) {
-      return res.status(404).json({
-        success: false,
-        message: 'Medication not found'
-      });
-    }
-
-    medication.lastTaken = new Date(takenAt);
-    medication.remainingQuantity = Math.max(0, medication.remainingQuantity - 1);
-    await medication.save();
-
-    // Create activity log
-    await Activity.create({
-      type: 'dose_taken',
-      patient: patientUserId,
-      caregiver: medication.caregiver,
-      medication: medication._id,
-      message: `${req.user.name} took ${medication.name}`,
-      priority: 'low',
-      metadata: {
-        doseTaken: new Date(takenAt)
-      }
-    });
-
-    res.status(200).json({
-      success: true,
-      message: 'Medication dose logged successfully'
-    });
-
-  } catch (error) {
-    console.error('Log medication taken error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to log medication dose'
     });
   }
 };
@@ -513,6 +463,206 @@ export const getCaregivers = async (req: AuthRequest, res: Response) => {
   }
 };
 
+export const logMedicationTaken = async (req: AuthRequest, res: Response) => {
+  try {
+    const { medicationId } = req.params;
+    const { notes, override } = req.body; // Add override option for emergencies
+    const patientUserId = req.user._id;
+    
+    const medication = await Medication.findOne({
+      _id: medicationId,
+      patient: patientUserId
+    });
+
+    if (!medication) {
+      return res.status(404).json({
+        success: false,
+        message: 'Medication not found'
+      });
+    }
+
+    // Get last dose from Activity (same as barcode scan)
+    const lastDoseActivity = await Activity.findOne({
+      patient: patientUserId, 
+      medication: medication._id,
+      type: 'dose_taken'
+    }).sort({ createdAt: -1 });
+
+    const actualLastTaken = lastDoseActivity ? lastDoseActivity.createdAt : null;
+    
+    // SAFETY CHECK 1: Basic dose timing (prevent double dosing)
+    const basicDoseCheck = canTakeMedicationNow(actualLastTaken, medication.frequency);
+    
+    // SAFETY CHECK 2: Meal timing windows
+    const timingWindowCheck = await checkMedicationTimingWindow(medication, patientUserId);
+    
+    // SAFETY CHECK 3: Medication expiry
+    const isExpired = new Date(medication.expiryDate) <= new Date();
+    
+    // SAFETY CHECK 4: Medication status and quantity
+    const hasQuantity = medication.remainingQuantity > 0;
+    const isActive = medication.status === 'active';
+
+    // Calculate days left
+    const daysLeft = Math.floor(medication.remainingQuantity / medication.frequency);
+
+    // Final decision: Must pass all checks OR be overridden
+    const finalCanTake = override || (
+      basicDoseCheck.canTake && 
+      timingWindowCheck.canTake && 
+      !isExpired && 
+      isActive && 
+      hasQuantity
+    );
+
+    // Determine reason for blocking
+    let blockReason = '';
+    let safetyWarnings = [];
+
+    if (!basicDoseCheck.canTake) {
+      blockReason = 'Too soon for next dose';
+      safetyWarnings.push(`Next dose available in ${basicDoseCheck.hoursRemaining} hours`);
+    } 
+    if (!timingWindowCheck.canTake) {
+      if (!blockReason) blockReason = timingWindowCheck.reason;
+      safetyWarnings.push(timingWindowCheck.reason);
+    }
+    if (isExpired) {
+      if (!blockReason) blockReason = 'Medication expired';
+      safetyWarnings.push(`Medication expired on ${medication.expiryDate.toDateString()}`);
+    }
+    if (!isActive) {
+      if (!blockReason) blockReason = 'Medication not active';
+      safetyWarnings.push('This medication is currently paused or inactive');
+    }
+    if (!hasQuantity) {
+      if (!blockReason) blockReason = 'No medication remaining';
+      safetyWarnings.push('No doses remaining - please contact your caregiver');
+    }
+
+    if (finalCanTake && safetyWarnings.length === 0) {
+      blockReason = 'Safe to take';
+    }
+
+    console.log('Safety check results:', {
+      basicDoseCheck: basicDoseCheck.canTake,
+      timingWindowCheck: timingWindowCheck.canTake,
+      isExpired,
+      isActive,
+      hasQuantity,
+      finalCanTake,
+      blockReason
+    });
+
+    // If not safe to take and no override, return safety warning
+    if (!finalCanTake) {
+      return res.status(400).json({
+        success: false,
+        message: blockReason,
+        data: {
+          canTake: false,
+          reason: blockReason,
+          warnings: safetyWarnings,
+          medication: {
+            id: medication._id,
+            name: medication.name,
+            dosage: `${medication.dosage} ${medication.dosageUnit}`,
+            lastTaken: actualLastTaken,
+            nextDoseTime: basicDoseCheck.nextDoseTime,
+            daysLeft: Math.max(0, daysLeft),
+            remainingQuantity: medication.remainingQuantity,
+            isExpired,
+            expiryDate: medication.expiryDate
+          },
+          timingInfo: {
+            timingRelation: medication.timingRelation,
+            currentWindows: timingWindowCheck.currentWindows,
+            nextWindow: timingWindowCheck.nextWindow,
+            timeUntilNextWindow: timingWindowCheck.timeUntilNextWindow
+          }
+        }
+      });
+    }
+
+    // If safe to take or overridden, proceed with logging
+    const takenTimeUTC = new Date();
+    const takenTime = new Date(takenTimeUTC.getTime() + (5.5 * 60 * 60 * 1000)); // IST conversion
+    
+    medication.lastTaken = takenTime;
+    medication.remainingQuantity = Math.max(0, medication.remainingQuantity - 1);
+    
+    if (medication.remainingQuantity === 0) {
+      medication.status = 'completed';
+    }
+
+    const savedMedication = await medication.save();
+
+    // Create activity log with safety info
+    await Activity.create({
+      type: 'dose_taken',
+      patient: patientUserId,
+      caregiver: medication.caregiver,
+      medication: medication._id,
+      message: override 
+        ? `${req.user.name} took ${medication.name} (OVERRIDE - ${blockReason})`
+        : `${req.user.name} took ${medication.name}`,
+      priority: override ? 'medium' : 'low',
+      metadata: {
+        doseTaken: takenTime,
+        remainingQuantity: savedMedication.remainingQuantity,
+        wasOverridden: override || false,
+        safetyReason: blockReason,
+        warnings: safetyWarnings
+      }
+    });
+
+    // Send low stock warning if running low
+    if (savedMedication.remainingQuantity <= 3 && savedMedication.remainingQuantity > 0) {
+      await Activity.create({
+        type: 'low_stock',
+        patient: patientUserId,
+        caregiver: medication.caregiver,
+        medication: medication._id,
+        message: `${medication.name} is running low (${savedMedication.remainingQuantity} doses left)`,
+        priority: 'high',
+        metadata: {
+          stockLevel: savedMedication.remainingQuantity
+        }
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: override 
+        ? 'Medication dose logged with safety override' 
+        : 'Medication dose logged successfully',
+      data: {
+        medicationId: savedMedication._id,
+        medicationName: savedMedication.name,
+        dosage: `${savedMedication.dosage} ${savedMedication.dosageUnit}`,
+        takenAt: takenTime,
+        lastTaken: savedMedication.lastTaken,
+        remainingQuantity: savedMedication.remainingQuantity,
+        status: savedMedication.status,
+        daysLeft: Math.max(0, Math.floor(savedMedication.remainingQuantity / medication.frequency)),
+        wasOverridden: override || false,
+        safetyInfo: {
+          reason: blockReason,
+          warnings: safetyWarnings
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Log medication taken error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to log medication dose'
+    });
+  }
+};
+
+// Keep the existing checkMedicationTiming function but enhance it
 export const checkMedicationTiming = async (req: AuthRequest, res: Response) => {
   try {
     const { medicationId } = req.params;
@@ -530,12 +680,79 @@ export const checkMedicationTiming = async (req: AuthRequest, res: Response) => 
       });
     }
 
-    const timingValidation = await checkMedicationTimingWindow(medication, patientUserId);
+    // Get last dose from Activity (same as barcode scan)
+    const lastDoseActivity = await Activity.findOne({
+      patient: patientUserId, 
+      medication: medication._id,
+      type: 'dose_taken'
+    }).sort({ createdAt: -1 });
+
+    const actualLastTaken = lastDoseActivity ? lastDoseActivity.createdAt : null;
+    
+    // Perform all safety checks
+    const basicDoseCheck = canTakeMedicationNow(actualLastTaken, medication.frequency);
+    const timingWindowCheck = await checkMedicationTimingWindow(medication, patientUserId);
+    const isExpired = new Date(medication.expiryDate) <= new Date();
+    const hasQuantity = medication.remainingQuantity > 0;
+    const isActive = medication.status === 'active';
+
+    const finalCanTake = basicDoseCheck.canTake && 
+                        timingWindowCheck.canTake && 
+                        !isExpired && 
+                        isActive && 
+                        hasQuantity;
+
+    // Prepare detailed response
+    let warnings = [];
+    let reason = 'Safe to take';
+
+    if (!basicDoseCheck.canTake) {
+      reason = 'Too soon for next dose';
+      warnings.push(`Next dose available in ${basicDoseCheck.hoursRemaining} hours`);
+    }
+    if (!timingWindowCheck.canTake) {
+      if (reason === 'Safe to take') reason = timingWindowCheck.reason;
+      warnings.push(timingWindowCheck.reason);
+    }
+    if (isExpired) {
+      if (reason === 'Safe to take') reason = 'Medication expired';
+      warnings.push(`Expired on ${medication.expiryDate.toDateString()}`);
+    }
+    if (!isActive) {
+      if (reason === 'Safe to take') reason = 'Medication not active';
+      warnings.push('Medication is paused or inactive');
+    }
+    if (!hasQuantity) {
+      if (reason === 'Safe to take') reason = 'No medication remaining';
+      warnings.push('No doses remaining');
+    }
 
     res.status(200).json({
       success: true,
       data: {
-        canTake: timingValidation.canTake
+        canTake: finalCanTake,
+        reason,
+        warnings,
+        medication: {
+          id: medication._id,
+          name: medication.name,
+          dosage: `${medication.dosage} ${medication.dosageUnit}`,
+          remainingQuantity: medication.remainingQuantity,
+          status: medication.status,
+          isExpired,
+          expiryDate: medication.expiryDate
+        },
+        dosing: {
+          lastTaken: actualLastTaken,
+          nextDoseTime: basicDoseCheck.nextDoseTime,
+          hoursRemaining: basicDoseCheck.hoursRemaining
+        },
+        timing: {
+          timingRelation: medication.timingRelation,
+          currentWindows: timingWindowCheck.currentWindows,
+          nextWindow: timingWindowCheck.nextWindow,
+          timeUntilNextWindow: timingWindowCheck.timeUntilNextWindow
+        }
       }
     });
 
@@ -546,6 +763,18 @@ export const checkMedicationTiming = async (req: AuthRequest, res: Response) => 
       message: 'Failed to check timing'
     });
   }
+};
+
+// Helper function to get timing recommendation (same as barcode controller)
+const getTimingRecommendation = (timingRelation: string): string => {
+  const recommendations = {
+    'before_food': 'Take 30-60 minutes before meals',
+    'after_food': 'Take 30-60 minutes after meals',
+    'with_food': 'Take during or immediately after meals',
+    'empty_stomach': 'Take on an empty stomach, 2 hours after or 1 hour before meals',
+    'anytime': 'Can be taken at any time'
+  };
+  return recommendations[timingRelation as keyof typeof recommendations] || 'Follow doctor instructions';
 };
 
 // Update getEmergencyContacts
