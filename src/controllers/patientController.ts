@@ -22,25 +22,114 @@ export const getDashboardData = async (req: AuthRequest, res: Response) => {
     // Calculate stats
     const totalMedications = medications.length;
     const activeMedications = medications.filter(med => med.status === 'active').length;
-    const adherenceRate = medications.length > 0 
-      ? Math.round(medications.reduce((sum, med) => sum + med.adherenceRate, 0) / medications.length)
+
+    // FIXED: Calculate proper adherence rate based on actual dose activities
+    let totalExpectedDoses = 0;
+    let totalTakenDoses = 0;
+    let totalMissedDoses = 0;
+
+    // Calculate adherence for last 7 days
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+    for (const medication of medications) {
+      if (medication.status === 'active') {
+        // Calculate expected doses for this medication in last 7 days
+        const expectedDosesPerDay = medication.frequency;
+        const expectedDoses = expectedDosesPerDay * 7;
+        totalExpectedDoses += expectedDoses;
+
+        // Get actual taken doses from activities
+        const takenDoses = await Activity.countDocuments({
+          patient: patientUserId,
+          medication: medication._id,
+          type: 'dose_taken',
+          createdAt: { $gte: sevenDaysAgo }
+        });
+
+        // Get missed doses from activities
+        const missedDoses = await Activity.countDocuments({
+          patient: patientUserId,
+          medication: medication._id,
+          type: 'dose_missed',
+          createdAt: { $gte: sevenDaysAgo }
+        });
+
+        totalTakenDoses += takenDoses;
+        totalMissedDoses += missedDoses;
+      }
+    }
+
+    // Calculate adherence rate percentage
+    const adherenceRate = totalExpectedDoses > 0 
+      ? Math.round((totalTakenDoses / totalExpectedDoses) * 100)
       : 0;
 
-    const missedDoses = Math.floor(Math.random() * 3);
+    // Update individual medication adherence rates
+    for (const medication of medications) {
+      if (medication.status === 'active') {
+        const expectedDoses = medication.frequency * 7;
+        const takenDoses = await Activity.countDocuments({
+          patient: patientUserId,
+          medication: medication._id,
+          type: 'dose_taken',
+          createdAt: { $gte: sevenDaysAgo }
+        });
+        
+        const medAdherenceRate = expectedDoses > 0 
+          ? Math.round((takenDoses / expectedDoses) * 100)
+          : 0;
+        
+        // Update medication adherence rate in database
+        await Medication.findByIdAndUpdate(medication._id, {
+          adherenceRate: medAdherenceRate
+        });
+      }
+    }
 
-    // Get today's medications
-    const todaysMedications = medications
-      .filter(med => med.status === 'active')
-      .map(med => ({
-        id: med._id,
-        name: med.name,
-        dosage: `${med.dosage} ${med.dosageUnit}`,
-        times: Array(med.frequency).fill(0).map((_, i) => `${8 + i * 4}:00`),
-        taken: Array(med.frequency).fill(false),
-        nextDoseTime: `${8}:00`,
-        instructions: med.instructions || '',
-        color: '#2563EB'
-      }));
+    // FIXED: Calculate today's missed doses
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayEnd = new Date();
+    todayEnd.setHours(23, 59, 59, 999);
+
+    const todayMissedDoses = await Activity.countDocuments({
+      patient: patientUserId,
+      type: 'dose_missed',
+      createdAt: { $gte: todayStart, $lte: todayEnd }
+    });
+
+    // Get today's medications with actual dose tracking
+    const todaysMedications = await Promise.all(
+      medications
+        .filter(med => med.status === 'active')
+        .map(async (med) => {
+          // Get today's taken doses for this medication
+          const todayTakenDoses = await Activity.countDocuments({
+            patient: patientUserId,
+            medication: med._id,
+            type: 'dose_taken',
+            createdAt: { $gte: todayStart, $lte: todayEnd }
+          });
+
+          // Create taken array based on frequency and actual doses taken
+          const takenArray = Array(med.frequency).fill(false);
+          for (let i = 0; i < Math.min(todayTakenDoses, med.frequency); i++) {
+            takenArray[i] = true;
+          }
+
+          return {
+            id: med._id,
+            name: med.name,
+            dosage: `${med.dosage} ${med.dosageUnit}`,
+            times: Array(med.frequency).fill(0).map((_, i) => `${8 + i * 4}:00`),
+            taken: takenArray,
+            nextDoseTime: `${8}:00`,
+            instructions: med.instructions || '',
+            color: '#2563EB'
+          };
+        })
+    );
 
     // Get upcoming reminders
     const upcomingReminders = medications
@@ -61,8 +150,14 @@ export const getDashboardData = async (req: AuthRequest, res: Response) => {
           activeMedications,
           todayReminders: activeMedications,
           adherenceRate,
-          missedDoses,
-          upcomingDoses: activeMedications
+          missedDoses: todayMissedDoses, // Today's missed doses
+          upcomingDoses: activeMedications,
+          weeklyStats: {
+            totalExpectedDoses,
+            totalTakenDoses,
+            totalMissedDoses,
+            adherenceRate
+          }
         },
         todaysMedications,
         upcomingReminders,
@@ -468,7 +563,7 @@ export const logMedicationTaken = async (req: AuthRequest, res: Response) => {
     const { medicationId } = req.params;
     const { notes, override } = req.body; // Add override option for emergencies
     const patientUserId = req.user._id;
-    
+
     const medication = await Medication.findOne({
       _id: medicationId,
       patient: patientUserId
