@@ -20,7 +20,8 @@ import {
   updateProfile,
   addEmergencyContact,
   removeEmergencyContact,
-  getRecentActivities
+  getRecentActivities,
+  checkMedicationTiming
 } from '../controllers/patientController';
 import { authenticateToken, authorizeRoles } from '../middleware/auth';
 import { handleValidationErrors } from '../middleware/errorHandler';
@@ -82,5 +83,6 @@ router.put('/profile', updateProfile);
 router.post('/emergency-contacts', addEmergencyContact);
 router.delete('/emergency-contacts/:contactId', removeEmergencyContact);
 router.get('/activities', getRecentActivities);
+router.get('/medications/:medicationId/timing-check', checkMedicationTiming);
 
 export default router;

@@ -11,6 +11,10 @@ import {
   sendPatientOTP,
   verifyPatientOTP,
   deleteMedication,
+  getNotifications,
+  markNotificationAsRead,
+  markAllNotificationsAsRead,
+  getNotificationCount,
 } from '../controllers/caregiverController';
 import {
   patientValidation,
@@ -57,5 +61,11 @@ router.delete('/medications/:medicationId', medicationIdValidation, handleValida
 
 // Barcode routes
 router.get('/barcodes', getBarcodes);
+
+//notification routes 
+router.get('/notifications', getNotifications);
+router.get('/notifications/count', getNotificationCount);
+router.patch('/notifications/:notificationId/read', markNotificationAsRead);
+router.patch('/notifications/read-all', markAllNotificationsAsRead);
 
 export default router;

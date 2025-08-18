@@ -543,6 +543,165 @@ export const getBarcodes = async (req: AuthRequest, res: Response) => {
   }
 };
 
+// Get notifications for caregiver
+export const getNotifications = async (req: AuthRequest, res: Response) => {
+  try {
+    const caregiverId = req.user._id;
+    const { type, read } = req.query;
+
+    // Build query for activities that are caregiver notifications
+    let query: any = { caregiver: caregiverId };
+    
+    if (type) {
+      query.type = type;
+    }
+    
+    if (read !== undefined) {
+      query.isRead = read === 'true';
+    }
+
+    // Get activities as notifications
+    const activities = await Activity.find(query)
+      .populate('patient', 'name email')
+      .populate('medication', 'name')
+      .sort({ createdAt: -1 })
+      .limit(50);
+
+    const notifications = activities.map(activity => ({
+      id: activity._id,
+      type: activity.type,
+      title: getCaregiverNotificationTitle(activity.type),
+      message: activity.message,
+      isRead: activity.isRead,
+      priority: activity.priority,
+      createdAt: activity.createdAt,
+      data: activity.metadata,
+      patient: activity.patient ? {
+        id: (activity.patient as any)._id,
+        name: (activity.patient as any).name,
+        email: (activity.patient as any).email
+      } : undefined
+    }));
+
+    const unreadCount = activities.filter(activity => !activity.isRead).length;
+
+    res.status(200).json({
+      success: true,
+      data: {
+        notifications,
+        unreadCount,
+        pagination: {
+          currentPage: 1,
+          totalPages: 1,
+          totalCount: notifications.length
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Get caregiver notifications error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get notifications'
+    });
+  }
+};
+
+// Mark notification as read for caregiver
+export const markNotificationAsRead = async (req: AuthRequest, res: Response) => {
+  try {
+    const { notificationId } = req.params;
+    const caregiverId = req.user._id;
+
+    // Update activity as read, but only if it belongs to this caregiver
+    const activity = await Activity.findOneAndUpdate(
+      { _id: notificationId, caregiver: caregiverId },
+      { isRead: true },
+      { new: true }
+    );
+
+    if (!activity) {
+      return res.status(404).json({
+        success: false,
+        message: 'Notification not found'
+      });
+    }
+
+    res.status(200).json({
+      success: true
+    });
+
+  } catch (error) {
+    console.error('Mark caregiver notification as read error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to mark notification as read'
+    });
+  }
+};
+
+// Mark all notifications as read for caregiver
+export const markAllNotificationsAsRead = async (req: AuthRequest, res: Response) => {
+  try {
+    const caregiverId = req.user._id;
+
+    await Activity.updateMany(
+      { caregiver: caregiverId },
+      { isRead: true }
+    );
+
+    res.status(200).json({
+      success: true,
+      message: 'All notifications marked as read'
+    });
+
+  } catch (error) {
+    console.error('Mark all caregiver notifications as read error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to mark all notifications as read'
+    });
+  }
+};
+
+// Get notification count for caregiver dashboard/navbar
+export const getNotificationCount = async (req: AuthRequest, res: Response) => {
+  try {
+    const caregiverId = req.user._id;
+
+    const unreadCount = await Activity.countDocuments({
+      caregiver: caregiverId,
+      isRead: false
+    });
+
+    res.status(200).json({
+      success: true,
+      data: {
+        unreadCount
+      }
+    });
+
+  } catch (error) {
+    console.error('Get caregiver notification count error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get notification count'
+    });
+  }
+};
+
+// Helper function for caregiver notification titles
+const getCaregiverNotificationTitle = (type: string): string => {
+  switch (type) {
+    case 'dose_taken': return 'Patient Took Medication';
+    case 'dose_missed': return 'Patient Missed Dose';
+    case 'low_stock': return 'Low Medication Stock';
+    case 'sos_alert': return 'Emergency Alert from Patient';
+    case 'medication_added': return 'New Medication Added';
+    default: return 'Notification';
+  }
+};
+
 // Search existing patients by email or phone
 export const searchExistingPatients = async (req: AuthRequest, res: Response) => {
   try {

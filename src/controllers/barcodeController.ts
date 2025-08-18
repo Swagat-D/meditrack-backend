@@ -2,19 +2,73 @@ import { Request, Response } from 'express';
 import Medication from '../models/Medication';
 import MedicationLog from '../models/MedicationLog';
 import Patient from '../models/Patient';
+import MealTime from '../models/MealTime';
 import Activity from '../models/Activity'
 import { parseMedicationBarcodeData, canTakeMedicationNow } from '../utils/barcodeUtils';
 import mongoose from 'mongoose';
+import { validateMedicationTiming } from '../utils/medicationTimingUtils';
 
 interface AuthRequest extends Request {
   user?: any;
 }
 
+export const checkMedicationTimingWindow = async (
+  medication: any,
+  patientUserId: string
+): Promise<{
+  canTake: boolean;
+  reason: string;
+  currentWindows: any[];
+  nextWindow: any;
+  timeUntilNextWindow: string | null;
+}> => {
+  try {
+    // Get patient's meal times
+    const mealTimes = await MealTime.find({ patient: patientUserId }).sort({ mealId: 1 });
+    
+    if (mealTimes.length === 0) {
+      // No meal times set - use default validation
+      return {
+        canTake: true,
+        reason: 'Meal times not configured - taking anytime',
+        currentWindows: [],
+        nextWindow: null,
+        timeUntilNextWindow: null
+      };
+    }
+
+    // Convert to meal times object
+    const mealTimesObj: any = {};
+    mealTimes.forEach(meal => {
+      mealTimesObj[meal.mealId] = meal.time;
+    });
+
+    // Use the timing validation function (you'll need to import this)
+    const validation = validateMedicationTiming(
+      medication.frequency,
+      medication.timingRelation,
+      mealTimesObj
+    );
+
+    return validation;
+
+  } catch (error) {
+    console.error('Error checking timing window:', error);
+    // Fallback to basic validation
+    return {
+      canTake: true,
+      reason: 'Timing check failed - allowing dose',
+      currentWindows: [],
+      nextWindow: null,
+      timeUntilNextWindow: null
+    };
+  }
+};
+
 export const scanBarcode = async (req: AuthRequest, res: Response) => {
   try {
     const { barcodeData } = req.params;
     const userEmail = req.user.email;
-
 
     const parsedData = parseMedicationBarcodeData(barcodeData);
     
@@ -45,11 +99,37 @@ export const scanBarcode = async (req: AuthRequest, res: Response) => {
 
     const actualLastTaken = lastDoseActivity ? lastDoseActivity.createdAt : null;
     
-
-    const doseCheck = canTakeMedicationNow(actualLastTaken, medication.frequency);
+    // Check basic dose timing (prevent double dosing)
+    const basicDoseCheck = canTakeMedicationNow(actualLastTaken, medication.frequency);
+    
+    // Check meal timing windows
+    const timingWindowCheck = await checkMedicationTimingWindow(medication, patientUser._id);
     
     const daysLeft = Math.floor(medication.remainingQuantity / medication.frequency);
     const isExpired = new Date(medication.expiryDate) <= new Date();
+
+    // Final decision: Must pass both checks
+    const finalCanTake = basicDoseCheck.canTake && 
+                        timingWindowCheck.canTake && 
+                        !isExpired && 
+                        medication.status === 'active' && 
+                        medication.remainingQuantity > 0;
+
+    // Determine reason for blocking
+    let blockReason = '';
+    if (!basicDoseCheck.canTake) {
+      blockReason = 'Too soon for next dose';
+    } else if (!timingWindowCheck.canTake) {
+      blockReason = timingWindowCheck.reason;
+    } else if (isExpired) {
+      blockReason = 'Medication expired';
+    } else if (medication.status !== 'active') {
+      blockReason = 'Medication not active';
+    } else if (medication.remainingQuantity <= 0) {
+      blockReason = 'No medication remaining';
+    } else {
+      blockReason = 'Safe to take';
+    }
 
     const result = {
       medication: {
@@ -68,7 +148,7 @@ export const scanBarcode = async (req: AuthRequest, res: Response) => {
         expiryDate: medication.expiryDate
       },
       patient: {
-        id: patientUser._id, // This is now User._id
+        id: patientUser._id,
         name: patientUser.name,
         email: patientUser.email
       },
@@ -78,15 +158,20 @@ export const scanBarcode = async (req: AuthRequest, res: Response) => {
         email: (medication.caregiver as any).email
       },
       dosingSafety: {
-        canTake: doseCheck.canTake && !isExpired && medication.status === 'active' && medication.remainingQuantity > 0,
-        reason: !doseCheck.canTake ? 'Too soon for next dose' : 
-                isExpired ? 'Medication expired' : 
-                medication.status !== 'active' ? 'Medication not active' : 
-                medication.remainingQuantity <= 0 ? 'No medication remaining' : 'Safe to take',
-        nextDoseTime: doseCheck.nextDoseTime,
-        hoursRemaining: doseCheck.hoursRemaining,
+        canTake: finalCanTake,
+        reason: blockReason,
+        
+        // Basic timing info
+        nextDoseTime: basicDoseCheck.nextDoseTime,
+        hoursRemaining: basicDoseCheck.hoursRemaining,
         lastTaken: actualLastTaken,
+        
+        // Meal timing info
         timingRelation: medication.timingRelation,
+        currentWindows: timingWindowCheck.currentWindows,
+        nextWindow: timingWindowCheck.nextWindow,
+        timeUntilNextWindow: timingWindowCheck.timeUntilNextWindow,
+        
         recommendedTiming: getTimingRecommendation(medication.timingRelation)
       }
     };

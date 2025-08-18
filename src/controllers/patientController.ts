@@ -6,6 +6,7 @@ import User from '../models/User';
 import mongoose from 'mongoose';
 import EmergencyContact from '../models/EmergencyContact';
 import MealTime from '../models/MealTime';
+import { checkMedicationTimingWindow } from './barcodeController';
 
 interface AuthRequest extends Request {
   user?: any;
@@ -470,35 +471,33 @@ export const sendSOSAlert = async (req: AuthRequest, res: Response) => {
   }
 };
 
-// Update the getCaregivers method to return proper format
 export const getCaregivers = async (req: AuthRequest, res: Response) => {
   try {
     const patientEmail = req.user.email;
 
-    const patient = await Patient.findOne({ email: patientEmail })
+    // Find patient relationships using email to get caregivers
+    const patientRelationships = await Patient.find({ email: patientEmail })
       .populate('caregiver', 'name email phoneNumber');
 
-    if (!patient) {
-      return res.status(404).json({
-        success: false,
-        message: 'Patient profile not found'
+    if (patientRelationships.length === 0) {
+      // Return empty array instead of error - patient might not have caregivers yet
+      return res.status(200).json({
+        success: true,
+        data: []
       });
     }
 
-    const caregivers = [];
-    if (patient.caregiver) {
-      caregivers.push({
-        id: (patient.caregiver as any)._id,
-        name: (patient.caregiver as any).name,
-        email: (patient.caregiver as any).email,
-        phoneNumber: (patient.caregiver as any).phoneNumber,
-        specialization: 'Healthcare Provider',
-        connectedDate: patient.createdAt ? 
-          new Date(patient.createdAt).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) : 
-          'January 2024',
-        status: 'active' as const
-      });
-    }
+    const caregivers = patientRelationships.map(relationship => ({
+      id: (relationship.caregiver as any)._id,
+      name: (relationship.caregiver as any).name,
+      email: (relationship.caregiver as any).email,
+      phoneNumber: (relationship.caregiver as any).phoneNumber,
+      specialization: 'Healthcare Provider',
+      connectedDate: relationship.createdAt ? 
+        new Date(relationship.createdAt).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) : 
+        'January 2024',
+      status: 'active' as const
+    }));
 
     res.status(200).json({
       success: true,
@@ -513,6 +512,42 @@ export const getCaregivers = async (req: AuthRequest, res: Response) => {
     });
   }
 };
+
+export const checkMedicationTiming = async (req: AuthRequest, res: Response) => {
+  try {
+    const { medicationId } = req.params;
+    const patientUserId = req.user._id;
+
+    const medication = await Medication.findOne({
+      _id: medicationId,
+      patient: patientUserId
+    });
+
+    if (!medication) {
+      return res.status(404).json({
+        success: false,
+        message: 'Medication not found'
+      });
+    }
+
+    const timingValidation = await checkMedicationTimingWindow(medication, patientUserId);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        canTake: timingValidation.canTake
+      }
+    });
+
+  } catch (error) {
+    console.error('Check medication timing error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check timing'
+    });
+  }
+};
+
 // Update getEmergencyContacts
 export const getEmergencyContacts = async (req: AuthRequest, res: Response) => {
   try {
