@@ -11,14 +11,16 @@ import './models/MedicationLog';
 
 const app = express();
 
+app.set('trust proxy', 1);
+
 // Security middleware
 app.use(helmet());
 
 // CORS configuration
 app.use(cors({
   origin: process.env.NODE_ENV === 'production' 
-    ? ['your-frontend-domain.com'] // Replace with your actual frontend domain
-    : ['http://localhost:3000', 'http://localhost:19006'], // React Native dev server
+    ? false 
+    : ['http://localhost:3000', 'http://localhost:19006'], 
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -31,7 +33,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // Global rate limiting
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
+  max: 500, // limit each IP to 100 requests per windowMs
   message: {
     success: false,
     message: 'Too many requests from this IP, please try again later'
