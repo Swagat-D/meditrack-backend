@@ -33,7 +33,6 @@ const patientSchema = new Schema<IPatient>({
   email: {
     type: String,
     required: [true, 'Email is required'],
-    unique: true,
     lowercase: true,
     trim: true,
     match: [/^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/, 'Please enter a valid email']
@@ -108,6 +107,8 @@ const patientSchema = new Schema<IPatient>({
     }
   }
 });
+
+patientSchema.index({ email: 1, caregiver: 1 }, { unique: true });
 
 // Indexes for performance
 patientSchema.index({ caregiver: 1 });
