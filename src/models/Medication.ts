@@ -132,14 +132,14 @@ medicationSchema.virtual('daysUntilExpiry').get(function() {
 medicationSchema.pre('save', async function(next) {
   if (!this.barcodeData) {
     try {
-      // Generate a unique barcode with patient and medication info
-      const patient = await mongoose.model('Patient').findById(this.patient);
-      if (!patient) {
-        return next(new Error('Patient not found'));
+      // Find the patient User document (not Patient document)
+      const patientUser = await mongoose.model('User').findById(this.patient);
+      if (!patientUser) {
+        return next(new Error('Patient user not found'));
       }
 
       // Create unique identifier components
-      const patientInitials = patient.name.split(' ').map((n: string) => n[0]).join('').toUpperCase();
+      const patientInitials = patientUser.name.split(' ').map((n: string) => n[0]).join('').toUpperCase();
       const medicationCode = this.name.substring(0, 3).toUpperCase().replace(/[^A-Z]/g, 'X');
       const dosageCode = this.dosage.replace('.', '');
       const unitCode = this.dosageUnit.substring(0, 2).toUpperCase();

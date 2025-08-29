@@ -79,7 +79,6 @@ export const getDashboardStats = async (req: AuthRequest, res: Response) => {
   }
 };
 
-// Get all patients
 export const getPatients = async (req: AuthRequest, res: Response) => {
   try {
     const caregiverId = req.user._id;
@@ -100,27 +99,55 @@ export const getPatients = async (req: AuthRequest, res: Response) => {
     const sort: any = {};
     sort[sortBy as string] = sortOrder === 'desc' ? -1 : 1;
 
-    // Get patients with medication count
+    // Get patients with medication count - FIX THE LOOKUP
     const patients = await Patient.aggregate([
       { $match: filter },
       {
+        // First lookup to get the User document for each patient
         $lookup: {
-          from: 'medications',
-          localField: '_id',
-          foreignField: 'patient',
-          as: 'medications'
-        }
-      },
-      {
-        $lookup: {
-          from: 'activities',
-          let: { patientId: '$_id' },
+          from: 'users',
+          let: { patientEmail: '$email' },
           pipeline: [
             {
               $match: {
                 $expr: {
                   $and: [
-                    { $eq: ['$patient', '$$patientId'] },
+                    { $eq: ['$email', '$$patientEmail'] },
+                    { $eq: ['$role', 'patient'] }
+                  ]
+                }
+              }
+            }
+          ],
+          as: 'patientUser'
+        }
+      },
+      {
+        // Then lookup medications using the User ID
+        $lookup: {
+          from: 'medications',
+          let: { patientUserId: { $arrayElemAt: ['$patientUser._id', 0] } },
+          pipeline: [
+            {
+              $match: {
+                $expr: { $eq: ['$patient', '$$patientUserId'] }
+              }
+            }
+          ],
+          as: 'medications'
+        }
+      },
+      {
+        // Lookup activities using the User ID
+        $lookup: {
+          from: 'activities',
+          let: { patientUserId: { $arrayElemAt: ['$patientUser._id', 0] } },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $eq: ['$patient', '$$patientUserId'] },
                     { $eq: ['$priority', 'critical'] },
                     { $eq: ['$isRead', false] }
                   ]
@@ -154,7 +181,8 @@ export const getPatients = async (req: AuthRequest, res: Response) => {
       },
       {
         $project: {
-          medications: 0
+          medications: 0,
+          patientUser: 0 // Remove the user lookup data from final result
         }
       },
       { $sort: sort }
@@ -186,7 +214,7 @@ export const getPatients = async (req: AuthRequest, res: Response) => {
   }
 };
 
-// Get patient details
+// getPatientDetails function:
 export const getPatientDetails = async (req: AuthRequest, res: Response) => {
   try {
     const { patientId } = req.params;
@@ -201,21 +229,34 @@ export const getPatientDetails = async (req: AuthRequest, res: Response) => {
     }
 
     // Get patient details
-    const patient = await Patient.findOne({
+    const patientRecord = await Patient.findOne({
       _id: patientId,
       caregiver: caregiverId
     });
 
-    if (!patient) {
+    if (!patientRecord) {
       return res.status(404).json({
         success: false,
         message: 'Patient not found'
       });
     }
 
-    // Get patient medications
+    // Find the actual User document for this patient
+    const patientUser = await User.findOne({
+      email: patientRecord.email,
+      role: 'patient'
+    });
+
+    if (!patientUser) {
+      return res.status(404).json({
+        success: false,
+        message: 'Patient user account not found'
+      });
+    }
+
+    // Get patient medications using the correct User ID
     const medications = await Medication.find({
-      patient: patientId,
+      patient: patientUser._id, // Use User ID, not Patient record ID
       caregiver: caregiverId
     }).sort({ createdAt: -1 });
 
@@ -228,18 +269,18 @@ export const getPatientDetails = async (req: AuthRequest, res: Response) => {
       success: true,
       data: {
         patient: {
-          id: patient._id,
-          name: patient.name,
-          email: patient.email,
-          phoneNumber: patient.phoneNumber,
-          age: patient.age,
-          gender: patient.gender,
-          lastActivity: patient.lastActivity,
-          status: patient.status,
+          id: patientRecord._id, // Return the Patient record ID for frontend consistency
+          name: patientRecord.name,
+          email: patientRecord.email,
+          phoneNumber: patientRecord.phoneNumber,
+          age: patientRecord.age,
+          gender: patientRecord.gender,
+          lastActivity: patientRecord.lastActivity,
+          status: patientRecord.status,
           adherenceRate,
-          emergencyContact: patient.emergencyContact,
-          medicalHistory: patient.medicalHistory,
-          allergies: patient.allergies
+          emergencyContact: patientRecord.emergencyContact,
+          medicalHistory: patientRecord.medicalHistory,
+          allergies: patientRecord.allergies
         },
         medications: medications.map(med => ({
           id: med._id,
@@ -264,6 +305,99 @@ export const getPatientDetails = async (req: AuthRequest, res: Response) => {
     res.status(500).json({
       success: false,
       message: 'Failed to get patient details'
+    });
+  }
+};
+
+// Add medication
+export const addMedication = async (req: AuthRequest, res: Response) => {
+  try {
+    const { patientId } = req.params;
+    const caregiverId = req.user._id;
+    const medicationData = req.body;
+
+    // First, validate that the patient exists and belongs to this caregiver
+    const patientRecord = await Patient.findOne({
+      _id: patientId,
+      caregiver: caregiverId
+    });
+
+    if (!patientRecord) {
+      return res.status(404).json({
+        success: false,
+        message: 'Patient not found or unauthorized access'
+      });
+    }
+
+    // Now find the actual User document for this patient
+    // The patient record contains the email, so we find the user by email and role
+    const patientUser = await User.findOne({
+      email: patientRecord.email,
+      role: 'patient'
+    });
+
+    if (!patientUser) {
+      return res.status(404).json({
+        success: false,
+        message: 'Patient user account not found'
+      });
+    }
+
+    // Create the medication using the actual User's _id
+    const medication = new Medication({
+      name: medicationData.name,
+      dosage: medicationData.dosage,
+      dosageUnit: medicationData.dosageUnit,
+      frequency: medicationData.frequency,
+      timingRelation: medicationData.timingRelation,
+      totalQuantity: medicationData.quantity, 
+      remainingQuantity: medicationData.quantity, 
+      expiryDate: medicationData.expiryDate,
+      instructions: medicationData.instructions,
+      patient: patientUser._id, // This is the correct User _id
+      caregiver: caregiverId
+    });
+
+    await medication.save();
+
+    const barcodeData = generateShortBarcodeData(medication._id.toString());
+    medication.barcodeData = barcodeData;
+    await medication.save();
+
+    console.log('Created medication with barcode:', {
+      medicationId: medication._id,
+      patientUserId: patientUser._id,
+      patientEmail: patientUser.email,
+      barcodeData: barcodeData
+    });
+
+    // Create activity log using the correct patient User _id
+    await Activity.create({
+      type: 'medication_added',
+      patient: patientUser._id, // Correct User _id
+      caregiver: caregiverId,
+      medication: medication._id,
+      message: `New medication ${medication.name} added for ${patientRecord.name}`,
+      priority: 'low'
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Medication added successfully',
+      data: {
+        medicationId: medication._id,
+        patientUserId: patientUser._id,
+        patientName: patientRecord.name,
+        barcodeData: medication.barcodeData
+      }
+    });
+
+  } catch (error) {
+    console.error('Add medication error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to add medication',
+      error: process.env.NODE_ENV === 'development' ? (error instanceof Error ? error.message : String(error)) : undefined
     });
   }
 };
@@ -311,94 +445,6 @@ export const addPatient = async (req: AuthRequest, res: Response) => {
     res.status(500).json({
       success: false,
       message: 'Failed to add patient'
-    });
-  }
-};
-
-// Add medication
-export const addMedication = async (req: AuthRequest, res: Response) => {
-  try {
-    const { patientId } = req.params;
-    const caregiverId = req.user._id;
-    const medicationData = req.body;
-
-    // Validate patient exists and belongs to caregiver
-    const patient = await Patient.findOne({
-      _id: patientId,
-      caregiver: caregiverId
-    });
-
-    if (!patient) {
-      return res.status(404).json({
-        success: false,
-        message: 'Patient not found'
-      });
-    }
-
-    const patientUser = await Patient.findOne({
-      email: patient.email,
-      caregiver: caregiverId
-    });
-
-    if (!patientUser) {
-      return res.status(403).json({
-        success: false,
-        message: 'User not found'
-      });
-    }
-
-const medication = new Medication({
-  name: medicationData.name,
-  dosage: medicationData.dosage,
-  dosageUnit: medicationData.dosageUnit,
-  frequency: medicationData.frequency,
-  timingRelation: medicationData.timingRelation,
-  totalQuantity: medicationData.quantity, 
-  remainingQuantity: medicationData.quantity, 
-  expiryDate: medicationData.expiryDate,
-  instructions: medicationData.instructions,
-  patient: patientUser._id,
-  caregiver: caregiverId
-});
-
-await medication.save();
-
-const barcodeData = generateShortBarcodeData(medication._id.toString());
-
-medication.barcodeData = barcodeData;
-await medication.save();
-
- console.log('Created medication with barcode:', {
-      medicationId: medication._id,
-      barcodeData: barcodeData
-    });
-
-
-
-    // Create activity log
-    await Activity.create({
-      type: 'medication_added',
-      patient: patientUser._id,
-      caregiver: caregiverId,
-      medication: medication._id,
-      message: `New medication ${medication.name} added for ${patient.name}`,
-      priority: 'low'
-    });
-
-    res.status(201).json({
-      success: true,
-      message: 'Medication added successfully',
-      data: {
-        medicationId: medication._id,
-        barcodeData: medication.barcodeData
-      }
-    });
-
-  } catch (error) {
-    console.error('Add medication error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to add medication'
     });
   }
 };
@@ -822,7 +868,7 @@ export const verifyPatientOTP = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Verify OTP
+    // Verify OTP logic...
     if (!patientUser.otp || !patientUser.otpExpires) {
       return res.status(400).json({
         success: false,
@@ -844,7 +890,6 @@ export const verifyPatientOTP = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    // Create patient entry
     const patient = new Patient({
       name: patientUser.name,
       email: patientUser.email,
@@ -861,10 +906,10 @@ export const verifyPatientOTP = async (req: AuthRequest, res: Response) => {
     patientUser.otpExpires = undefined;
     await patientUser.save();
 
-    // Create activity log
+    // FIXED: Create activity log with User ID, not Patient record ID
     await Activity.create({
-      type: 'medication_added',
-      patient: patient._id,
+      type: 'patient_added',
+      patient: patientUser._id,
       caregiver: caregiverId,
       message: `Patient ${patient.name} added to your care`,
       priority: 'low'
@@ -891,23 +936,41 @@ export const removePatient = async (req: AuthRequest, res: Response) => {
     const { patientId } = req.params;
     const caregiverId = req.user._id;
 
-    const patient = await Patient.findOneAndDelete({
+    // Find the patient relationship record
+    const patientRecord = await Patient.findOne({
       _id: patientId,
       caregiver: caregiverId
     });
 
-    if (!patient) {
+    if (!patientRecord) {
       return res.status(404).json({
         success: false,
         message: 'Patient not found'
       });
     }
 
-    // Also remove all medications and activities for this patient-caregiver relationship
-    await Activity.deleteMany({ 
-      patient: patient._id,
-      caregiver: caregiverId 
+    // FIXED: Find the actual User account to get the correct User ID
+    const patientUser = await User.findOne({
+      email: patientRecord.email,
+      role: 'patient'
     });
+
+    if (patientUser) {
+      // Remove medications for this patient-caregiver relationship
+      await Medication.deleteMany({ 
+        patient: patientUser._id,  // Use User ID, not Patient record ID
+        caregiver: caregiverId 
+      });
+
+      // Remove activities for this patient-caregiver relationship
+      await Activity.deleteMany({ 
+        patient: patientUser._id,  // Use User ID, not Patient record ID
+        caregiver: caregiverId 
+      });
+    }
+
+    // Remove the patient relationship record
+    await Patient.findByIdAndDelete(patientId);
 
     res.status(200).json({
       success: true,

@@ -468,25 +468,25 @@ export const markAllNotificationsAsRead = async (req: AuthRequest, res: Response
   }
 };
 
-// Send SOS alert
 export const sendSOSAlert = async (req: AuthRequest, res: Response) => {
   try {
     const { message, location, severity } = req.body;
     const patientUserId = req.user._id;
 
-    const patient = await Patient.findOne({ email: req.user.email }).populate('caregiver');
-    if (!patient) {
+    // Find the patient relationship record using the user's email
+    const patientRecord = await Patient.findOne({ email: req.user.email }).populate('caregiver');
+    if (!patientRecord) {
       return res.status(404).json({
         success: false,
         message: 'No caregiver found for this patient'
       });
     }
 
-    // Create SOS activity
+    // Create SOS activity using the correct User ID
     const sosActivity = await Activity.create({
       type: 'sos_alert',
-      patient: patientUserId,
-      caregiver: patient.caregiver,
+      patient: patientUserId, // This should be the User ID, not Patient record ID
+      caregiver: patientRecord.caregiver,
       message,
       priority: 'critical',
       metadata: {
