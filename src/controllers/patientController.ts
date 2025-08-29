@@ -7,6 +7,7 @@ import EmergencyContact from '../models/EmergencyContact';
 import MealTime from '../models/MealTime';
 import { checkMedicationTimingWindow } from './barcodeController';
 import { canTakeMedicationNow } from '../utils/barcodeUtils';
+import { getCurrentIST, convertUTCToIST, getTodayStartIST, getTodayEndIST, getDaysAgoIST } from '../utils/timezoneUtils';
 
 interface AuthRequest extends Request {
   user?: any;
@@ -29,8 +30,7 @@ export const getDashboardData = async (req: AuthRequest, res: Response) => {
     let totalMissedDoses = 0;
 
     // Calculate adherence for last 7 days
-    const sevenDaysAgo = new Date();
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    const sevenDaysAgo = getDaysAgoIST(7);
 
     for (const medication of medications) {
       if (medication.status === 'active') {
@@ -88,10 +88,8 @@ export const getDashboardData = async (req: AuthRequest, res: Response) => {
     }
 
     // FIXED: Calculate today's missed doses
-    const todayStart = new Date();
-    todayStart.setHours(0, 0, 0, 0);
-    const todayEnd = new Date();
-    todayEnd.setHours(23, 59, 59, 999);
+    const todayStart = getTodayStartIST();
+    const todayEnd = getTodayEndIST();
 
     const todayMissedDoses = await Activity.countDocuments({
       patient: patientUserId,
@@ -583,8 +581,8 @@ export const logMedicationTaken = async (req: AuthRequest, res: Response) => {
       type: 'dose_taken'
     }).sort({ createdAt: -1 });
 
-    const actualLastTaken = lastDoseActivity ? lastDoseActivity.createdAt : null;
-    
+    const actualLastTaken = lastDoseActivity ? convertUTCToIST(lastDoseActivity.createdAt) : null;
+        
     // SAFETY CHECK 1: Basic dose timing (prevent double dosing)
     const basicDoseCheck = canTakeMedicationNow(actualLastTaken, medication.frequency);
     
@@ -680,8 +678,7 @@ export const logMedicationTaken = async (req: AuthRequest, res: Response) => {
     }
 
     // If safe to take or overridden, proceed with logging
-    const takenTimeUTC = new Date();
-    const takenTime = new Date(takenTimeUTC.getTime() + (5.5 * 60 * 60 * 1000)); // IST conversion
+    const takenTime = getCurrentIST();
     
     medication.lastTaken = takenTime;
     medication.remainingQuantity = Math.max(0, medication.remainingQuantity - 1);
@@ -782,7 +779,7 @@ export const checkMedicationTiming = async (req: AuthRequest, res: Response) => 
       type: 'dose_taken'
     }).sort({ createdAt: -1 });
 
-    const actualLastTaken = lastDoseActivity ? lastDoseActivity.createdAt : null;
+    const actualLastTaken = lastDoseActivity ? convertUTCToIST(lastDoseActivity.createdAt) : null;
     
     // Perform all safety checks
     const basicDoseCheck = canTakeMedicationNow(actualLastTaken, medication.frequency);

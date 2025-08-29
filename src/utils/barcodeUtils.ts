@@ -1,3 +1,5 @@
+import { getCurrentIST, convertUTCToIST } from './timezoneUtils';
+
 /**
  * Generate short barcode data using medication ID
  * Format: MT[8-char-code] 
@@ -65,8 +67,9 @@ export const canTakeMedicationNow = (lastTaken: Date | null, frequency: number):
 
   const hoursPerDay = 24;
   const intervalHours = hoursPerDay / frequency;
-  const now = new Date();
-  const timeSinceLastDose = (now.getTime() - lastTaken.getTime()) / (1000 * 60 * 60);
+  const now = getCurrentIST();
+  const lasTakenIST = convertUTCToIST(lastTaken);
+  const timeSinceLastDose = (now.getTime() - lasTakenIST.getTime()) / (1000 * 60 * 60);
 
   console.log(`Time since last dose: ${timeSinceLastDose.toFixed(2)} hours`);
   console.log(`Required interval: ${intervalHours} hours`);
@@ -76,7 +79,7 @@ export const canTakeMedicationNow = (lastTaken: Date | null, frequency: number):
     return { canTake: true };
   }
 
-  const nextDoseTime = new Date(lastTaken.getTime() + (intervalHours * 60 * 60 * 1000));
+  const nextDoseTime = new Date(lasTakenIST.getTime() + (intervalHours * 60 * 60 * 1000));
   const hoursRemaining = Math.ceil(intervalHours - timeSinceLastDose);
 
   console.log(`Next dose time: ${nextDoseTime}`);

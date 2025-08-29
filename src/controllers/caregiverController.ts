@@ -7,6 +7,7 @@ import mongoose from 'mongoose';
 import { generateOTP, generateOTPExpiry, isOTPExpired } from '../utils/otpUtils';
 import { emailService } from '../services/emailService';
 import { generateMedicationBarcodeData, generateShortBarcodeData } from '../utils/barcodeUtils';
+import { getTodayStartIST, getTodayEndIST } from '../utils/timezoneUtils';
 
 interface AuthRequest extends Request {
   user?: any;
@@ -39,10 +40,8 @@ export const getDashboardStats = async (req: AuthRequest, res: Response) => {
     ]);
 
     // Get today's reminders (medications that need to be taken today)
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
+    const today = getTodayStartIST();
+    const tomorrow = getTodayEndIST();
 
     const todayReminders = await Medication.countDocuments({
       caregiver: caregiverId,

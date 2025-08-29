@@ -4,6 +4,7 @@ import MealTime from '../models/MealTime';
 import Activity from '../models/Activity'
 import { parseMedicationBarcodeData, canTakeMedicationNow } from '../utils/barcodeUtils';
 import { validateMedicationTiming } from '../utils/medicationTimingUtils';
+import { getCurrentIST, convertUTCToIST } from '../utils/timezoneUtils';
 
 interface AuthRequest extends Request {
   user?: any;
@@ -94,7 +95,7 @@ export const scanBarcode = async (req: AuthRequest, res: Response) => {
       type: 'dose_taken'
     }).sort({ createdAt: -1 });
 
-    const actualLastTaken = lastDoseActivity ? lastDoseActivity.createdAt : null;
+    const actualLastTaken = lastDoseActivity ? convertUTCToIST(lastDoseActivity.createdAt) : null;
     
     // Check basic dose timing (prevent double dosing)
     const basicDoseCheck = canTakeMedicationNow(actualLastTaken, medication.frequency);
@@ -103,7 +104,7 @@ export const scanBarcode = async (req: AuthRequest, res: Response) => {
     const timingWindowCheck = await checkMedicationTimingWindow(medication, patientUser._id);
     
     const daysLeft = Math.floor(medication.remainingQuantity / medication.frequency);
-    const isExpired = new Date(medication.expiryDate) <= new Date();
+    const isExpired = new Date(medication.expiryDate) <= getCurrentIST();
 
     // Final decision: Must pass both checks
     const finalCanTake = basicDoseCheck.canTake && 
@@ -211,7 +212,7 @@ export const recordMedicationViaBarcode = async (req: AuthRequest, res: Response
       });
     }
 
-    const takenTime = takenAt ? new Date(takenAt) : new Date();
+    const takenTime = takenAt ? convertUTCToIST(new Date(takenAt)) : getCurrentIST();
     
     medication.lastTaken = takenTime;
     medication.remainingQuantity = Math.max(0, medication.remainingQuantity - 1);
