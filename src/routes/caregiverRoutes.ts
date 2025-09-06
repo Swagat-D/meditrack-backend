@@ -15,6 +15,8 @@ import {
   markNotificationAsRead,
   markAllNotificationsAsRead,
   getNotificationCount,
+  getPatientEmergencyContacts,
+  getPatientMedicationHistory,
 } from '../controllers/caregiverController';
 import {
   patientValidation,
@@ -67,5 +69,9 @@ router.get('/notifications', getNotifications);
 router.get('/notifications/count', getNotificationCount);
 router.patch('/notifications/:notificationId/read', markNotificationAsRead);
 router.patch('/notifications/read-all', markAllNotificationsAsRead);
+
+//others
+router.get('/patients/:patientId/emergency-contacts', getPatientEmergencyContacts);
+router.get('/patients/:patientId/medication-history', getPatientMedicationHistory);
 
 export default router;

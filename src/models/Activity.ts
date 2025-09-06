@@ -13,6 +13,9 @@ export interface IActivity extends mongoose.Document {
     doseTaken?: Date;
     stockLevel?: number;
     alertType?: string;
+    method?: string;
+    wasOverridden?: boolean;
+    notes?: string;
   };
   createdAt: Date;
   updatedAt: Date;

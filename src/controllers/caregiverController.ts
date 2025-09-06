@@ -6,8 +6,10 @@ import User from '../models/User';
 import mongoose from 'mongoose';
 import { generateOTP, generateOTPExpiry, isOTPExpired } from '../utils/otpUtils';
 import { emailService } from '../services/emailService';
-import { generateMedicationBarcodeData, generateShortBarcodeData } from '../utils/barcodeUtils';
+import { generateShortBarcodeData } from '../utils/barcodeUtils';
+import EmergencyContact from '../models/EmergencyContact';
 import { getTodayStartIST, getTodayEndIST } from '../utils/timezoneUtils';
+import MedicationLog from '../models/MedicationLog';
 
 interface AuthRequest extends Request {
   user?: any;
@@ -444,6 +446,216 @@ export const addPatient = async (req: AuthRequest, res: Response) => {
     res.status(500).json({
       success: false,
       message: 'Failed to add patient'
+    });
+  }
+};
+
+//get patient's emergency contact(primary contact only)
+export const getPatientEmergencyContacts = async (req: AuthRequest, res: Response) => {
+  try {
+    const caregiverId = req.user._id;
+    const { patientId } = req.params;
+
+    // Verify caregiver has access to this patient using your existing Patient model
+    const patientRecord = await Patient.findOne({
+      _id: patientId,
+      caregiver: caregiverId
+    });
+
+    if (!patientRecord) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Patient not found or not connected.'
+      });
+    }
+
+    // Find the actual User document for this patient
+    const patientUser = await User.findOne({
+      email: patientRecord.email,
+      role: 'patient'
+    });
+
+    if (!patientUser) {
+      return res.status(404).json({
+        success: false,
+        message: 'Patient user account not found'
+      });
+    }
+
+    // Get emergency contacts for this patient using the User ID
+    const emergencyContacts = await EmergencyContact.find({ patient: patientUser._id })
+      .sort({ isPrimary: -1, createdAt: -1 });
+
+    const primaryContact = emergencyContacts.find(contact => contact.isPrimary);
+
+    if (!primaryContact) {
+      return res.status(200).json({
+        success: true,
+        data: null
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        id: primaryContact._id,
+        name: primaryContact.name,
+        relationship: primaryContact.relationship,
+        phone: primaryContact.phoneNumber,
+        isPrimary: primaryContact.isPrimary,
+      }
+    });
+
+  } catch (error) {
+    console.error('Get patient emergency contacts error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get emergency contacts'
+    });
+  }
+};
+
+//get patients medication history
+export const getPatientMedicationHistory = async (req: AuthRequest, res: Response) => {
+  try {
+    const { patientId } = req.params;
+    const caregiverId = req.user._id;
+
+    // Verify caregiver has access to this patient
+    const patientRecord = await Patient.findOne({
+      _id: patientId,
+      caregiver: caregiverId
+    });
+
+    if (!patientRecord) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied. Patient not found or not connected.'
+      });
+    }
+
+    // Find the actual User document for this patient
+    const patientUser = await User.findOne({
+      email: patientRecord.email,
+      role: 'patient'
+    });
+
+    if (!patientUser) {
+      return res.status(404).json({
+        success: false,
+        message: 'Patient user account not found'
+      });
+    }
+
+    // Get patient medications
+    const medications = await Medication.find({
+      patient: patientUser._id,
+      caregiver: caregiverId
+    });
+
+    // Get last 7 days date range
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setDate(endDate.getDate() - 6); // Last 7 days including today
+    startDate.setHours(0, 0, 0, 0);
+    endDate.setHours(23, 59, 59, 999);
+
+    // CHANGED: Get medication logs from Activity model instead of MedicationLog
+    const logs = await Activity.find({
+      patient: patientUser._id,
+      type: 'dose_taken',
+      medication: { $in: medications.map(m => m._id) },
+      createdAt: { $gte: startDate, $lte: endDate }
+    })
+    .populate('medication', 'name')
+    .sort({ createdAt: 1 });
+
+    // Generate 7 days array
+    const days: { date: string; displayDate: string }[] = [];
+    for (let i = 0; i < 7; i++) {
+      const date = new Date();
+      date.setDate(date.getDate() - (6 - i));
+      days.push({
+        date: date.toISOString().split('T')[0],
+        displayDate: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+      });
+    }
+
+    // Build medication history
+    const medicationHistory = medications.map(medication => {
+      const medicationLogs = logs.filter(log => 
+        log.medication && log.medication._id.toString() === medication._id.toString()
+      );
+      
+      const dailyStatus = days.map(day => {
+        const dayLogs = medicationLogs.filter(log => {
+          const logDate = new Date(log.createdAt).toISOString().split('T')[0];
+          return logDate === day.date;
+        });
+
+        // Create status array based on frequency
+        const doses = [];
+        for (let i = 0; i < medication.frequency; i++) {
+          doses.push({
+            taken: i < dayLogs.length,
+            time: dayLogs[i] ? new Date(dayLogs[i].createdAt).toLocaleTimeString('en-US', { 
+              hour: '2-digit', 
+              minute: '2-digit' 
+            }) : null,
+            method: dayLogs[i] ? (dayLogs[i].metadata?.method || 'manual') : null,
+            // Additional data from Activity
+            wasOverridden: dayLogs[i] ? (dayLogs[i].metadata?.wasOverridden || false) : false,
+            notes: dayLogs[i] ? dayLogs[i].metadata?.notes : null
+          });
+        }
+
+        // Calculate actual taken count for the day
+        const actualTakenCount = dayLogs.length;
+
+        return {
+          date: day.date,
+          displayDate: day.displayDate,
+          doses,
+          adherenceRate: Math.round((actualTakenCount / medication.frequency) * 100)
+        };
+      });
+
+      return {
+        id: medication._id,
+        name: medication.name,
+        dosage: `${medication.dosage} ${medication.dosageUnit}`,
+        frequency: medication.frequency,
+        timingRelation: medication.timingRelation,
+        dailyStatus
+      };
+    });
+
+    // Calculate overall stats for the 7-day period
+    const totalExpectedDoses = medications.reduce((total, med) => total + (med.frequency * 7), 0);
+    const totalTakenDoses = logs.length;
+    const overallAdherenceRate = totalExpectedDoses > 0 
+      ? Math.round((totalTakenDoses / totalExpectedDoses) * 100) 
+      : 0;
+
+    res.status(200).json({
+      success: true,
+      data: {
+        days,
+        medications: medicationHistory,
+        summary: {
+          totalExpectedDoses,
+          totalTakenDoses,
+          overallAdherenceRate,
+          missedDoses: totalExpectedDoses - totalTakenDoses
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Get patient medication history error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get medication history'
     });
   }
 };
