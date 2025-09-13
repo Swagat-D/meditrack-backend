@@ -523,24 +523,30 @@ export const getCaregivers = async (req: AuthRequest, res: Response) => {
       .populate('caregiver', 'name email phoneNumber');
 
     if (patientRelationships.length === 0) {
-      // Return empty array instead of error - patient might not have caregivers yet
       return res.status(200).json({
         success: true,
         data: []
       });
     }
 
-    const caregivers = patientRelationships.map(relationship => ({
-      id: (relationship.caregiver as any)._id,
-      name: (relationship.caregiver as any).name,
-      email: (relationship.caregiver as any).email,
-      phoneNumber: (relationship.caregiver as any).phoneNumber,
-      specialization: 'Healthcare Provider',
-      connectedDate: relationship.createdAt ? 
-        new Date(relationship.createdAt).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) : 
-        'January 2024',
-      status: 'active' as const
-    }));
+    const caregivers = patientRelationships
+      .filter(relationship => {
+        return relationship.caregiver && (relationship.caregiver as any)?._id;
+      })
+      .map(relationship => {
+        const caregiver = relationship.caregiver as any;
+        return {
+          id: caregiver._id,
+          name: caregiver.name || 'Unknown Caregiver',
+          email: caregiver.email || '',
+          phoneNumber: caregiver.phoneNumber || '',
+          specialization: 'Healthcare Provider',
+          connectedDate: relationship.createdAt ? 
+            new Date(relationship.createdAt).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) : 
+            'January 2024',
+          status: 'active' as const
+        };
+      });
 
     res.status(200).json({
       success: true,
@@ -1048,7 +1054,6 @@ export const getNotificationSettings = async (req: AuthRequest, res: Response) =
   }
 };
 
-// Get current user profile
 export const getCurrentUser = async (req: AuthRequest, res: Response) => {
   try {
     const patientEmail = req.user.email;
