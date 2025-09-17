@@ -9,6 +9,9 @@ import {
   getNotifications,
   markNotificationAsRead,
   markAllNotificationsAsRead,
+  deleteNotification,
+  deleteMultipleNotifications,
+  deleteAllNotifications,
   sendSOSAlert,
   getEmergencyContacts,
   getCaregivers,
@@ -21,7 +24,7 @@ import {
   addEmergencyContact,
   removeEmergencyContact,
   getRecentActivities,
-  checkMedicationTiming
+  checkMedicationTiming,
 } from '../controllers/patientController';
 import { authenticateToken, authorizeRoles } from '../middleware/auth';
 import { handleValidationErrors } from '../middleware/errorHandler';
@@ -60,8 +63,11 @@ router.put('/meal-times', updateMealTimes);
 
 // Notifications
 router.get('/notifications', getNotifications);
-router.patch('/notifications/:notificationId/read', markNotificationAsRead);
 router.patch('/notifications/read-all', markAllNotificationsAsRead);
+router.delete('/notifications/delete-multiple', deleteMultipleNotifications);
+router.delete('/notifications/delete-all', deleteAllNotifications);
+router.patch('/notifications/:notificationId/read', markNotificationAsRead);
+router.delete('/notifications/:notificationId', deleteNotification);
 
 // SOS/Emergency
 router.post('/sos', sendSOSAlert);

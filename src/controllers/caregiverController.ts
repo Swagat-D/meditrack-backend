@@ -361,16 +361,35 @@ export const addMedication = async (req: AuthRequest, res: Response) => {
 
     await medication.save();
 
-    const barcodeData = generateShortBarcodeData(medication._id.toString());
-    medication.barcodeData = barcodeData;
-    await medication.save();
-
-    console.log('Created medication with barcode:', {
-      medicationId: medication._id,
-      patientUserId: patientUser._id,
-      patientEmail: patientUser.email,
-      barcodeData: barcodeData
-    });
+    // Generate unique barcode with collision handling
+    try {
+      const barcodeData = await generateShortBarcodeData(medication._id.toString());
+      medication.barcodeData = barcodeData;
+      await medication.save();
+      
+      console.log('Created medication with barcode:', {
+        medicationId: medication._id,
+        patientUserId: patientUser._id,
+        patientEmail: patientUser.email,
+        barcodeData: barcodeData
+      });
+    } catch (barcodeError: any) {
+      // If barcode generation fails, delete the medication and return error
+      await Medication.findByIdAndDelete(medication._id);
+      console.error('Barcode generation failed:', barcodeError);
+      
+      if (barcodeError.code === 11000) {
+        return res.status(409).json({
+          success: false,
+          message: 'Barcode generation failed due to uniqueness constraint. Please try again.'
+        });
+      }
+      
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to generate unique barcode for medication. Please try again.'
+      });
+    }
 
     // Create activity log using the correct patient User _id
     await Activity.create({
@@ -943,6 +962,102 @@ export const getNotificationCount = async (req: AuthRequest, res: Response) => {
     res.status(500).json({
       success: false,
       message: 'Failed to get notification count'
+    });
+  }
+};
+
+// Delete single notification for caregiver
+export const deleteNotification = async (req: AuthRequest, res: Response) => {
+  try {
+    const { notificationId } = req.params;
+    const caregiverId = req.user._id;
+
+    // Find and delete the notification (activity) for this caregiver
+    const deletedActivity = await Activity.findOneAndDelete({
+      _id: notificationId,
+      caregiver: caregiverId
+    });
+
+    if (!deletedActivity) {
+      return res.status(404).json({
+        success: false,
+        message: 'Notification not found'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Notification deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('Delete caregiver notification error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete notification'
+    });
+  }
+};
+
+// Delete multiple notifications for caregiver
+export const deleteMultipleNotifications = async (req: AuthRequest, res: Response) => {
+  try {
+    const { notificationIds } = req.body;
+    const caregiverId = req.user._id;
+
+    if (!Array.isArray(notificationIds) || notificationIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Notification IDs array is required'
+      });
+    }
+
+    // Delete multiple notifications for this caregiver
+    const deleteResult = await Activity.deleteMany({
+      _id: { $in: notificationIds },
+      caregiver: caregiverId
+    });
+
+    res.status(200).json({
+      success: true,
+      message: `${deleteResult.deletedCount} notifications deleted successfully`,
+      data: {
+        deletedCount: deleteResult.deletedCount,
+        requestedCount: notificationIds.length
+      }
+    });
+
+  } catch (error) {
+    console.error('Delete multiple caregiver notifications error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete notifications'
+    });
+  }
+};
+
+// Delete all notifications for caregiver
+export const deleteAllNotifications = async (req: AuthRequest, res: Response) => {
+  try {
+    const caregiverId = req.user._id;
+
+    const deleteResult = await Activity.deleteMany({
+      caregiver: caregiverId
+    });
+
+    res.status(200).json({
+      success: true,
+      message: `All ${deleteResult.deletedCount} notifications deleted successfully`,
+      data: {
+        deletedCount: deleteResult.deletedCount
+      }
+    });
+
+  } catch (error) {
+    console.error('Delete all caregiver notifications error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete all notifications'
     });
   }
 };

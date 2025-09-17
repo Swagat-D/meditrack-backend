@@ -271,3 +271,54 @@ const getTimingRecommendation = (timingRelation: string): string => {
   };
   return recommendations[timingRelation as keyof typeof recommendations] || 'Follow doctor instructions';
 };
+
+/**
+ * Test endpoint for barcode collision handling
+ * Only available in development mode
+ */
+export const testBarcodeCollision = async (req: Request, res: Response) => {
+  try {
+    if (process.env.NODE_ENV !== 'development') {
+      return res.status(403).json({
+        success: false,
+        message: 'Test endpoints only available in development mode'
+      });
+    }
+
+    const { simulateBarcodeCollision, testBarcodeFormats } = await import('../utils/barcodeCollisionTest');
+    
+    console.log('Running barcode collision tests...');
+    
+    // Capture console output for response
+    const originalLog = console.log;
+    const logs: string[] = [];
+    console.log = (...args) => {
+      logs.push(args.join(' '));
+      originalLog(...args);
+    };
+    
+    try {
+      await simulateBarcodeCollision();
+      testBarcodeFormats();
+    } finally {
+      console.log = originalLog;
+    }
+    
+    res.status(200).json({
+      success: true,
+      message: 'Barcode collision tests completed',
+      data: {
+        testOutput: logs,
+        timestamp: new Date().toISOString()
+      }
+    });
+
+  } catch (error) {
+    console.error('Test barcode collision error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to run barcode collision tests',
+      error: process.env.NODE_ENV === 'development' ? (error instanceof Error ? error.message : String(error)) : undefined
+    });
+  }
+};

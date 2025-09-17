@@ -178,11 +178,11 @@ medicationSchema.pre('save', async function(next) {
   next();
 });
 
-// Indexes for performance
+// Indexes for performance and uniqueness
 medicationSchema.index({ patient: 1 });
 medicationSchema.index({ caregiver: 1 });
 medicationSchema.index({ status: 1 });
 medicationSchema.index({ expiryDate: 1 });
-medicationSchema.index({ barcodeData: 1 });
+medicationSchema.index({ barcodeData: 1 }, { unique: true });
 
 export default mongoose.model<IMedication>('Medication', medicationSchema);

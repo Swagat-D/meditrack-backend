@@ -14,6 +14,9 @@ import {
   getNotifications,
   markNotificationAsRead,
   markAllNotificationsAsRead,
+  deleteNotification,
+  deleteMultipleNotifications,
+  deleteAllNotifications,
   getNotificationCount,
   getPatientEmergencyContacts,
   getPatientMedicationHistory,
@@ -32,8 +35,8 @@ const router = express.Router();
 
 // Rate limiting for caregiver endpoints
 const caregiverLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 50, // limit each IP to 50 requests per windowMs
+  windowMs: 15 * 60 * 1000,
+  max: 50,
   message: {
     success: false,
     message: 'Too many requests, please try again later'
@@ -67,8 +70,11 @@ router.get('/barcodes', getBarcodes);
 //notification routes 
 router.get('/notifications', getNotifications);
 router.get('/notifications/count', getNotificationCount);
-router.patch('/notifications/:notificationId/read', markNotificationAsRead);
 router.patch('/notifications/read-all', markAllNotificationsAsRead);
+router.delete('/notifications/delete-multiple', deleteMultipleNotifications);
+router.delete('/notifications/delete-all', deleteAllNotifications);
+router.patch('/notifications/:notificationId/read', markNotificationAsRead);
+router.delete('/notifications/:notificationId', deleteNotification);
 
 //others
 router.get('/patients/:patientId/emergency-contacts', getPatientEmergencyContacts);

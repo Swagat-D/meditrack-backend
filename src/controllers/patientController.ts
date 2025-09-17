@@ -5,6 +5,7 @@ import Activity from '../models/Activity';
 import User from '../models/User';
 import EmergencyContact from '../models/EmergencyContact';
 import MealTime from '../models/MealTime';
+import mongoose from 'mongoose';
 import { checkMedicationTimingWindow } from './barcodeController';
 import { canTakeMedicationNow } from '../utils/barcodeUtils';
 import { getCurrentIST, convertUTCToIST, getTodayStartIST, getTodayEndIST, getDaysAgoIST } from '../utils/timezoneUtils';
@@ -27,7 +28,7 @@ export const getDashboardData = async (req: AuthRequest, res: Response) => {
     // FIXED: Calculate proper adherence rate based on actual dose activities
     let totalExpectedDoses = 0;
     let totalTakenDoses = 0;
-    let totalMissedDoses = 0;
+    let totalMissedDoses = 0; 
 
     // Calculate adherence for last 7 days
     const sevenDaysAgo = getDaysAgoIST(7);
@@ -466,6 +467,143 @@ export const markAllNotificationsAsRead = async (req: AuthRequest, res: Response
   }
 };
 
+// Delete single notification
+export const deleteNotification = async (req: AuthRequest, res: Response) => {
+  try {
+    const { notificationId } = req.params;
+    const patientUserId = req.user._id;
+
+    console.log('🔍 Delete single notification request:', {
+      notificationId,
+      patientUserId,
+      url: req.url,
+      method: req.method
+    });
+
+    // Validate ObjectId format
+    if (!mongoose.Types.ObjectId.isValid(notificationId)) {
+      console.log('❌ Invalid ObjectId format:', notificationId);
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid notification ID format'
+      });
+    }
+
+    // Find and delete the notification (activity) for this patient
+    const deletedActivity = await Activity.findOneAndDelete({
+      _id: notificationId,
+      patient: patientUserId
+    });
+
+    if (!deletedActivity) {
+      console.log('❌ Notification not found:', notificationId);
+      return res.status(404).json({
+        success: false,
+        message: 'Notification not found'
+      });
+    }
+
+    console.log('✅ Notification deleted successfully:', notificationId);
+    res.status(200).json({
+      success: true,
+      message: 'Notification deleted successfully'
+    });
+
+  } catch (error) {
+    console.error('❌ Delete notification error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete notification'
+    });
+  }
+};
+
+// Delete multiple notifications
+export const deleteMultipleNotifications = async (req: AuthRequest, res: Response) => {
+  try {
+    const { notificationIds } = req.body;
+    const patientUserId = req.user._id;
+
+    console.log('🔍 Delete multiple notifications request:', {
+      notificationIds,
+      patientUserId,
+      requestBody: req.body
+    });
+
+    if (!Array.isArray(notificationIds) || notificationIds.length === 0) {
+      console.log('❌ Invalid notification IDs array');
+      return res.status(400).json({
+        success: false,
+        message: 'Notification IDs array is required'
+      });
+    }
+
+    // Validate ObjectId format for all IDs
+    const invalidIds = notificationIds.filter(id => !mongoose.Types.ObjectId.isValid(id));
+    if (invalidIds.length > 0) {
+      console.log('❌ Invalid ObjectId format:', invalidIds);
+      return res.status(400).json({
+        success: false,
+        message: `Invalid notification IDs: ${invalidIds.join(', ')}`
+      });
+    }
+
+    // Delete multiple notifications for this patient
+    const deleteResult = await Activity.deleteMany({
+      _id: { $in: notificationIds },
+      patient: patientUserId
+    });
+
+    console.log('✅ Delete result:', {
+      deletedCount: deleteResult.deletedCount,
+      requestedCount: notificationIds.length
+    });
+
+    res.status(200).json({
+      success: true,
+      message: `${deleteResult.deletedCount} notifications deleted successfully`,
+      data: {
+        deletedCount: deleteResult.deletedCount,
+        requestedCount: notificationIds.length
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Delete multiple notifications error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete notifications'
+    });
+  }
+};
+
+// Delete all notifications
+export const deleteAllNotifications = async (req: AuthRequest, res: Response) => {
+  try {
+    const patientUserId = req.user._id;
+
+    const deleteResult = await Activity.deleteMany({
+      patient: patientUserId
+    });
+
+    res.status(200).json({
+      success: true,
+      message: `All ${deleteResult.deletedCount} notifications deleted successfully`,
+      data: {
+        deletedCount: deleteResult.deletedCount
+      }
+    });
+
+  } catch (error) {
+    console.error('Delete all notifications error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete all notifications'
+    });
+  }
+};
+
+
 export const sendSOSAlert = async (req: AuthRequest, res: Response) => {
   try {
     const { message, location, severity } = req.body;
@@ -473,35 +611,83 @@ export const sendSOSAlert = async (req: AuthRequest, res: Response) => {
 
     // Find the patient relationship record using the user's email
     const patientRecord = await Patient.findOne({ email: req.user.email }).populate('caregiver');
-    if (!patientRecord) {
-      return res.status(404).json({
-        success: false,
-        message: 'No caregiver found for this patient'
+    
+    let caregiverId = null;
+    let caregiverInfo = null;
+
+    if (patientRecord && patientRecord.caregiver && patientRecord.caregiver._id) {
+      caregiverId = patientRecord.caregiver._id;
+      caregiverInfo = {
+        id: patientRecord.caregiver._id,
+        name: (patientRecord.caregiver as any).name || 'Caregiver',
+        email: (patientRecord.caregiver as any).email || ''
+      };
+      console.log('Found caregiver for SOS alert:', caregiverId);
+    } else {
+      console.log('No caregiver found, will create SOS alert for emergency services');
+      
+      // Try to find any caregiver user to assign this to (emergency fallback)
+      const emergencyCaregiver = await User.findOne({ role: 'caregiver' }).sort({ createdAt: 1 });
+      if (emergencyCaregiver) {
+        caregiverId = emergencyCaregiver._id;
+        caregiverInfo = {
+          id: emergencyCaregiver._id,
+          name: 'Emergency Services',
+          email: emergencyCaregiver.email
+        };
+        console.log('Using emergency caregiver:', caregiverId);
+      }
+    }
+
+    if (!caregiverId) {
+      // If still no caregiver found, we'll create a system alert without caregiver requirement
+      return res.status(202).json({
+        success: true,
+        message: 'Emergency alert logged. No caregiver available - please contact emergency services directly.',
+        data: {
+          type: 'sos_alert',
+          message: message || 'Emergency assistance needed',
+          location,
+          status: 'pending_caregiver',
+          emergencyNumber: '911',
+          createdAt: new Date()
+        }
       });
     }
 
-    // Create SOS activity using the correct User ID
+    console.log('Creating SOS alert:', {
+      patientUserId,
+      caregiverId,
+      message,
+      location
+    });
+
+    // Create SOS activity with validated caregiver
     const sosActivity = await Activity.create({
       type: 'sos_alert',
-      patient: patientUserId, // This should be the User ID, not Patient record ID
-      caregiver: patientRecord.caregiver,
-      message,
+      patient: patientUserId,
+      caregiver: caregiverId,
+      message: message || 'Emergency assistance needed',
       priority: 'critical',
       metadata: {
         alertType: 'sos',
-        location
+        location,
+        severity: severity || 'critical'
       }
     });
+
+    console.log('SOS alert created successfully:', sosActivity._id);
 
     res.status(201).json({
       success: true,
       data: {
         id: sosActivity._id,
         type: 'sos_alert',
-        message,
+        message: sosActivity.message,
         location,
         status: 'active',
-        createdAt: sosActivity.createdAt
+        createdAt: sosActivity.createdAt,
+        caregiver: caregiverInfo
       }
     });
 
